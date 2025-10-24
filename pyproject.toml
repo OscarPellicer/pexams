@@ -42,5 +42,8 @@ Homepage = "https://github.com/OscarPellicer/pexams"
 [tool.setuptools]
 packages = ["pexams"]
 
+[tool.setuptools.packages.find]
+where = ["pexams"]
+
 [tool.setuptools.package-data]
 pexams = ["*.css", "assets/sample_test.json", "assets/media/test_image.jpg"]
