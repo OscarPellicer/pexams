@@ -1,0 +1,272 @@
+/* pexams default CSS */
+
+body {
+    font-family: 'Open Sans', sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #333;
+    -webkit-print-color-adjust: exact; /* Ensures colors and backgrounds are printed */
+}
+
+@page {
+    size: A4;
+    margin: 15mm;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 400;
+    color: black;
+    text-align: left;
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+}
+
+h1 { font-size: 14pt; }
+h2 { font-size: 12pt; }
+
+.exam-title { font-size: 14pt; margin-bottom: 2mm; }
+.exam-subtitle { font-size: 12pt; margin-bottom: 2mm; }
+
+/* --- PAGE CONTAINERS --- */
+.page-container {
+    width: 100%;
+    height: 100%;
+    page-break-after: always; /* Ensure each container is a new page */
+}
+
+/* --- ANSWER SHEET --- */
+.answer-sheet-page {
+    position: relative; /* Needed for absolute positioning of children */
+    width: 180mm;
+    height: 267mm; /* A4 height minus margins */
+}
+
+.exam-info, .student-name-label, .student-id-label, .student-signature-label {
+    /* Shared styles for header text elements */
+    font-size: 10pt;
+    color: #333;
+}
+.exam-info span {
+    margin-right: 5mm;
+    display: block;
+}
+
+.student-info, .student-name, .student-id-grid {
+    /* No longer needed for layout */
+    all: unset;
+}
+
+.id-box, .student-name-box, .student-signature-box {
+    border: 1px solid black;
+    border-radius: 2px;
+}
+
+.model-id-box {
+    border: 1px solid black;
+    border-radius: 2px;
+}
+
+.model-id-text {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10pt;
+    font-weight: normal;
+}
+
+.instructions-box {
+    border: 1px solid #000000;
+    padding: 2mm;
+    font-size: 7pt;
+    width: 70mm;
+    border-radius: 2px;
+}
+.instructions-box h4 {
+    margin-top: 0;
+    margin-bottom: 1mm;
+    font-size: 8pt;
+    border-bottom: 1px solid #000000;
+    padding-bottom: 1mm;
+}
+.instructions-box ul {
+    margin: 0;
+    padding-left: 3mm;
+    list-style-position: outside;
+}
+.instructions-box li {
+    margin-bottom: 1.5mm;
+}
+.instruction-example-container {
+    list-style-type: none;
+}
+.instruction-example {
+    display: flex;
+    align-items: center;
+    margin-top: 1mm;
+}
+.instruction-example span {
+    margin-right: 2mm;
+}
+.instruction-example img {
+    /* Size is now set in the SVG itself */
+}
+
+.example-box {
+    border: 1px solid black;
+    width: 5mm;
+    height: 2mm;
+    border-radius: 2px;
+    position: relative; /* For positioning the line */
+}
+
+.example-box.correct {
+    background-color: black;
+}
+
+.example-box.incorrect .incorrect-line {
+    position: absolute;
+    top: 50%;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background-color: black;
+    transform: translateY(-50%);
+}
+
+.answer-group, .answer-row, .options-container {
+    /* These are no longer used for positioning */
+    all: unset;
+}
+
+.answer-header {
+    font-weight: bold;
+    text-align: center;
+}
+
+.header-q-num, .question-number {
+    font-size: 11pt;
+    font-weight: bold;
+    text-align: left;
+    line-height: 1; /* Reset line height */
+}
+
+.header-option {
+    text-align: center;
+    font-weight: bold;
+    font-family: monospace;
+}
+
+.option-box {
+    border: 1px solid black;
+    border-radius: 2px;
+}
+
+/* --- FIDUCIAL MARKERS --- */
+.fiducial {
+    position: absolute;
+    width: 8mm;
+    height: 8mm;
+}
+.fiducial::before, .fiducial::after {
+    content: '';
+    position: absolute;
+    background-color: black;
+}
+.fiducial::before {
+    left: 50%;
+    width: 1mm;
+    height: 100%;
+    transform: translateX(-50%);
+}
+.fiducial::after {
+    top: 50%;
+    height: 1mm;
+    width: 100%;
+    transform: translateY(-50%);
+}
+.fiducial.top-left { top: 0; left: 0; }
+.fiducial.top-right { top: 0; right: 0; }
+.fiducial.bottom-left { bottom: 5mm; left: 0; }
+.fiducial.bottom-right { bottom: 5mm; right: 0; }
+
+/* --- QUESTION LAYOUT --- */
+.questions-container {
+    width: 100%;
+    height: 100%;
+}
+
+.questions-container.two-columns {
+    column-count: 2;
+    column-gap: 15mm;
+}
+
+.questions-container.three-columns {
+    column-count: 3;
+    column-gap: 10mm;
+}
+
+.question-wrapper {
+    break-inside: avoid-column;
+    padding-bottom: 1em;
+}
+
+.question-text {
+    margin-bottom: 0.5em;
+}
+
+.options-block {
+    padding-left: 20px;
+}
+
+.option-item {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 0.2em;
+}
+
+.option-label {
+    display: inline-block;
+    min-width: 25px;
+    flex-shrink: 0;
+}
+
+.option-text p {
+    margin: 0;
+    display: inline;
+}
+
+.question-wrapper ul {
+    margin-top: 0.2em;
+    margin-bottom: 0.2em;
+    padding-left: 20px;
+    list-style-position: inside;
+}
+
+.question-wrapper ul li {
+    margin-bottom: 0.1em;
+}
+
+.question-wrapper ul li p {
+    margin: 0;
+    display: inline; /* To keep the text next to the list marker */
+}
+
+/* --- UTILITIES --- */
+img {
+    max-width: 100%;
+    height: auto;
+}
+img[alt~="center"] {
+    display: block;
+    margin: 0 auto;
+}
+img[alt~="left"] {
+    float: left;
+    margin-right: 1em;
+    margin-bottom: 0.5em;
+}
+img[alt~="right"] {
+    float: right;
+    margin-left: 1em;
+    margin-bottom: 0.5em;
+}

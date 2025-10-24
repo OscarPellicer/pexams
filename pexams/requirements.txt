@@ -1,0 +1,24 @@
+# Core
+numpy
+pydantic
+Markdown
+Faker
+
+# PDF/Image processing
+opencv-python
+pdf2image
+Pillow
+
+# Web/Playwright
+playwright
+
+# ML/OCR
+torch
+torchvision
+transformers
+timm
+
+# For pdf2image to work, you may also need to install poppler.
+# On Windows: conda install -c conda-forge poppler
+# On MacOS: brew install poppler
+# On Debian/Ubuntu: sudo apt-get install poppler-utils
