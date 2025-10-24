@@ -1,0 +1,23 @@
+# Core
+numpy
+pydantic
+Markdown
+Faker
+
+# PDF/Image processing
+opencv-python
+pdf2image
+Pillow
+
+# Web/Playwright
+playwright
+
+# Analysis
+matplotlib
+pandas
+
+# ML/OCR
+torch
+torchvision
+transformers
+timm

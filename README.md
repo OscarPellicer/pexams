@@ -11,20 +11,30 @@ NOTE: This library is still in development and is not yet ready for production u
 
 The library has been tested on Python 3.11.
 
+<!-- may not be needed
 ### Prerequisites
 
 - **Poppler**: Needed for `pdf2image` to convert PDFs to images during correction.
   - **Windows**: `conda install -c conda-forge poppler`
   - **macOS**: `brew install poppler`
-  - **Debian/Ubuntu**: `sudo apt-get install poppler-utils`
+  - **Debian/Ubuntu**: `sudo apt-get install poppler-utils` 
+  - -->
 
 ### 1. Install the library
 
-For development, you can install it in editable mode from the `pexams` directory:
+You can install the library directly from GitHub:
+
 ```bash
+pip install git+https://github.com/OscarPellicer/pexams.git
+```
+
+Alternatively, you can clone the repository and install it in editable mode, which is useful for development:
+
+```bash
+git clone https://github.com/OscarPellicer/pexams.git
+cd pexams
 pip install -e .
 ```
-This will install the necessary Python dependencies and make the `pexams` command-line tool available in your environment.
 
 ### 2. Install Playwright browsers
 
@@ -62,6 +72,22 @@ pexams correct --input-path ./exam_output/simulated_scans/ --exam-dir ./exam_out
 ```
 
 This will create a `correction_results` directory with a CSV report and annotated images of each corrected scan.
+
+## Visual examples
+
+You can view an example of a fully generated exam PDF [here](media/example_model_1.pdf).
+
+Below is an example of a simulated answer sheet and the annotated, corrected version that the library produces.
+
+| Simulated Scan | Corrected Scan |
+| :---: | :---: |
+| <img src="media/simulated.png" width="400"> | <img src="media/corrected.png" width="400"> |
+
+The analysis module also generates a plot showing the distribution of answers for each question, which helps in identifying problematic questions, as well as a plot showing the distribution of marks, which helps in assessing the fairness of the exam.
+
+| Answer distribution | Marks distribution |
+| :---: | :---: |
+| <img src="media/answer_distribution.png" width="400"> | <img src="media/mark_distribution.png" width="400"> |
 
 ## Usage
 

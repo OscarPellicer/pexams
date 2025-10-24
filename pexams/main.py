@@ -104,6 +104,7 @@ def main():
             
         # Load all solutions from exam_dir
         solutions_per_model = {}
+        solutions_per_model_for_correction = {}
         max_score = 0
         try:
             solution_files = glob.glob(os.path.join(args.exam_dir, "exam_model_*_questions.json"))
@@ -116,10 +117,17 @@ def main():
                 if model_id_match:
                     model_id = model_id_match.group(1)
                     exam = PexamExam.model_validate_json(Path(sol_file).read_text(encoding="utf-8"))
-                    solutions = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
-                    solutions_per_model[model_id] = solutions
-                    if len(solutions) > max_score:
-                        max_score = len(solutions)
+                    
+                    # Store full question data for analysis
+                    solutions_per_model[model_id] = {q.id: q.model_dump() for q in exam.questions}
+                    
+                    # Store only indices for the correction module
+                    solutions_for_correction = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
+                    solutions_per_model_for_correction[model_id] = solutions_for_correction
+
+                    if len(solutions_for_correction) > max_score:
+                        max_score = len(solutions_for_correction)
+                        
             logging.info(f"Loaded solutions for models: {list(solutions_per_model.keys())}")
         except Exception as e:
             logging.error(f"Failed to load or parse solutions from {args.exam_dir}: {e}", exc_info=True)
@@ -129,7 +137,7 @@ def main():
         
         correction_success = correct_exams.correct_exams(
             input_path=args.input_path,
-            solutions_per_model=solutions_per_model,
+            solutions_per_model=solutions_per_model_for_correction,
             output_dir=args.output_dir
         )
         
@@ -141,7 +149,8 @@ def main():
                     csv_filepath=results_csv,
                     max_score=max_score,
                     output_dir=args.output_dir,
-                    void_questions_str=args.void_questions
+                    void_questions_str=args.void_questions,
+                    solutions_per_model=solutions_per_model
                 )
             else:
                 logging.error(f"Analysis skipped: correction results file not found at {results_csv}")

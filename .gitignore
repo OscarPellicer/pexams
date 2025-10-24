@@ -147,7 +147,7 @@ dmypy.json
 cython_debug/
 
 # VSCode files
-.vscode/
+# .vscode/
 
 # Exam files
 exam_output/

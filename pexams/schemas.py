@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, computed_field
 
 class PexamOption(BaseModel):
     """Data model for a single answer option in a question."""
@@ -24,6 +24,7 @@ class PexamQuestion(BaseModel):
             raise ValueError('Each question must have exactly one correct answer.')
         return v
     
+    @computed_field
     @property
     def correct_answer_index(self) -> Optional[int]:
         """Returns the index of the first correct answer, or None if no correct answer is set."""

@@ -14,7 +14,9 @@ setup(
         "Markdown",
         "Faker",
         "Pillow",
-        "playwright"
+        "playwright",
+        "matplotlib",
+        "pandas"
     ],
     extras_require={
         "ocr": ["torch", "torchvision", "transformers", "timm"]

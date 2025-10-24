@@ -1,0 +1,49 @@
+{
+    // See https://go.microsoft.com/fwlink/?linkid=830387
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "configurations": [
+        {
+            "name": "Pexams: Generate",
+            "type": "python",
+            "request": "launch",
+            "module": "pexams.main",
+            "args": [
+                "generate",
+                "--questions-json",
+                "sample_test.json",
+                "--output-dir",
+                "exam_output",
+                "--num-models",
+                "2",
+                "--generate-fakes",
+                "4",
+                "--columns",
+                "2",
+                "--exam-title",
+                "Sample Exam",
+                "--exam-course",
+                "Introduction to Everything",
+                "--exam-date",
+                "2025-10-26"
+            ],
+            "justMyCode": true
+        },
+        {
+            "name": "Pexams: Correct",
+            "type": "python",
+            "request": "launch",
+            "module": "pexams.main",
+            "args": [
+                "correct",
+                "--input-path",
+                "./exam_output/simulated_scans/",
+                "--exam-dir",
+                "./exam_output/",
+                "--output-dir",
+                "./correction_results"
+            ],
+            "justMyCode": true
+        }
+    ]
+}
