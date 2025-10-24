@@ -7,6 +7,121 @@ from collections import Counter
 import logging
 from typing import Optional, List
 from tabulate import tabulate
+from matplotlib.patches import Patch
+
+def _plot_answer_distribution(df, solutions_per_model, output_dir):
+    """
+    Plots the distribution of answers for each question in a single grouped bar chart,
+    normalized to model 1's answer order.
+    """
+    # Assuming the first model key is the reference (e.g., "1")
+    ref_model_key = sorted(solutions_per_model.keys())[0]
+    ref_solutions = solutions_per_model[ref_model_key]
+    
+    # Create a mapping from option text to the reference index for each question
+    option_text_to_ref_idx = {}
+    for q_id, q_data in ref_solutions.items():
+        option_text_to_ref_idx[q_id] = {opt['text']: i for i, opt in enumerate(q_data['options'])}
+
+    # Translate all student answers to the reference model's option indexing
+    all_answers_translated = []
+    for _, row in df.iterrows():
+        model_id = str(row['model_id'])
+        if model_id not in solutions_per_model:
+            continue
+        
+        current_model_solutions = solutions_per_model[model_id]
+        
+        for q_num_str, ans_char in row.items():
+            if not q_num_str.startswith('answer_'):
+                continue
+            
+            q_id = int(q_num_str.split('_')[1])
+            if q_id not in current_model_solutions or not isinstance(ans_char, str) or ans_char == 'NA':
+                continue
+
+            # Convert character answer to index (A=0, B=1, ...)
+            ans_idx = ord(ans_char) - ord('A')
+            
+            # Get the text of the option the student chose
+            try:
+                chosen_option_text = current_model_solutions[q_id]['options'][ans_idx]['text']
+            except IndexError:
+                continue
+
+            # Find the corresponding index in the reference model
+            if q_id in option_text_to_ref_idx and chosen_option_text in option_text_to_ref_idx[q_id]:
+                ref_idx = option_text_to_ref_idx[q_id][chosen_option_text]
+                all_answers_translated.append({'question_id': q_id, 'ref_answer_idx': ref_idx})
+
+    if not all_answers_translated:
+        logging.warning("Could not generate answer distribution plot: No valid translated answers found.")
+        return
+
+    translated_df = pd.DataFrame(all_answers_translated)
+    
+    question_ids = sorted(ref_solutions.keys())
+    num_questions = len(question_ids)
+    
+    max_num_options = 0
+    if ref_solutions:
+        max_num_options = max(len(q_data['options']) for q_data in ref_solutions.values())
+
+    answer_counts_by_q = {
+        q_id: translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
+        for q_id in question_ids
+    }
+
+    fig, ax = plt.subplots(figsize=(max(15, num_questions * 2), 8))
+    x = np.arange(num_questions)
+    width = 0.8 / max_num_options if max_num_options > 0 else 0.8
+
+    for i in range(max_num_options):
+        counts = [answer_counts_by_q[q_id].get(i, 0) for q_id in question_ids]
+        offset = (i - (max_num_options - 1) / 2) * width
+        
+        colors = []
+        for q_id in question_ids:
+            correct_idx = ref_solutions[q_id]['correct_answer_index']
+            # Only add a bar if this option index is valid for the question
+            if i < len(ref_solutions[q_id]['options']):
+                colors.append('green' if i == correct_idx else 'red')
+            else:
+                # This is a placeholder, this bar won't be plotted
+                colors.append('none')
+
+        # Filter positions, counts, and colors for valid options
+        valid_positions = [x[j] + offset for j, q_id in enumerate(question_ids) if i < len(ref_solutions[q_id]['options'])]
+        valid_counts = [counts[j] for j, q_id in enumerate(question_ids) if i < len(ref_solutions[q_id]['options'])]
+        valid_colors = [c for c in colors if c != 'none']
+        
+        if valid_positions:
+            ax.bar(valid_positions, valid_counts, width, label=f'Option {chr(ord("A") + i)}', color=valid_colors)
+
+    ax.set_title('Answer Distribution per Question', fontsize=16)
+    ax.set_xlabel('Question ID', fontsize=12)
+    ax.set_ylabel('Number of Students', fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'Q{q_id}' for q_id in question_ids])
+    
+    max_count = 0
+    if all_answers_translated:
+        max_count = translated_df.groupby('question_id')['ref_answer_idx'].count().max()
+
+    ax.set_yticks(np.arange(0, max_count + 2, 1))
+    
+    # Custom legend for colors
+    legend_elements = [Patch(facecolor='green', label='Correct Answer'),
+                       Patch(facecolor='red', label='Incorrect Answer')]
+    ax.legend(handles=legend_elements)
+
+    plt.tight_layout()
+    plot_filename = os.path.join(output_dir, "answer_distribution.png")
+    try:
+        plt.savefig(plot_filename)
+        logging.info(f"Answer distribution plot saved to {os.path.abspath(plot_filename)}")
+    except Exception as e:
+        logging.error(f"Error saving answer distribution plot: {e}")
 
 def parse_q_list(q_str: Optional[str]) -> List[int]:
     """Converts a comma-separated string of question numbers to a sorted list of unique integers."""
@@ -18,7 +133,7 @@ def parse_q_list(q_str: Optional[str]) -> List[int]:
         logging.warning(f"Invalid format for question list string: '{q_str}'. Expected comma-separated numbers. Returning empty list.")
         return []
 
-def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str: Optional[str] = None, void_questions_nicely_str: Optional[str] = None):
+def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str: Optional[str] = None, void_questions_nicely_str: Optional[str] = None, solutions_per_model=None):
     """
     Analyzes exam results from a CSV file, scales scores to 0-10, 
     plots score distribution, and shows statistics.
@@ -67,6 +182,9 @@ def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str:
     if void_questions_nicely_str:
         logging.warning("'void_nicely' is not supported with the current CSV format from pexams. Ignoring.")
 
+    if solutions_per_model:
+        _plot_answer_distribution(df, solutions_per_model, output_dir)
+        
     adjustments_made = bool(void_q_list)
     
     df['score_adjusted'] = df['score_numeric'].copy()
