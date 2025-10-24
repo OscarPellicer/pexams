@@ -11,6 +11,7 @@ from pexams import generate_exams
 from pexams import analysis
 from pexams.schemas import PexamExam, PexamQuestion
 from pydantic import ValidationError
+import pexams
 
 def main():
     """Main CLI entry point for the pexams library."""
@@ -59,6 +60,18 @@ def main():
         help="Comma-separated list of question numbers to remove from score calculation (e.g., '3,4')."
     )
 
+    # --- Test Command ---
+    test_parser = subparsers.add_parser(
+        "test",
+        help="Run a full generate/correct cycle using the bundled sample files."
+    )
+    test_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./pexams_test_output",
+        help="Directory to save the test output."
+    )
+
     # --- Generation Command ---
     generate_parser = subparsers.add_parser(
         "generate",
@@ -94,7 +107,85 @@ def main():
     log_level = getattr(logging, args.log_level.upper() if hasattr(args, 'log_level') else 'INFO', logging.INFO)
     logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    if args.command == "correct":
+    if args.command == "test":
+        output_dir = args.output_dir
+        exam_output_dir = os.path.join(output_dir, "exam_output")
+        correction_output_dir = os.path.join(output_dir, "correction_results")
+
+        # --- Generation Step ---
+        logging.info("--- Running Generation Step ---")
+        package_dir = Path(pexams.__file__).parent
+        questions_path = package_dir / "assets" / "sample_test.json"
+        
+        if not questions_path.exists():
+            logging.error("Could not find the bundled 'sample_test.json'.")
+            return
+
+        try:
+            exam = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
+            questions = exam.questions
+        except (ValidationError, json.JSONDecodeError) as e:
+            logging.error(f"Failed to load or parse the bundled 'sample_test.json': {e}")
+            return
+            
+        json_dir = questions_path.parent
+        for q in questions:
+            if q.image_source and not Path(q.image_source).is_absolute():
+                image_path = (json_dir / q.image_source).resolve()
+                if image_path.exists():
+                    q.image_source = str(image_path)
+
+        generate_exams.generate_exams(
+            questions=questions,
+            output_dir=exam_output_dir,
+            num_models=2,
+            generate_fakes=4,
+            columns=2,
+            exam_title="CI Test Exam"
+        )
+        
+        # --- Correction Step ---
+        logging.info("--- Running Correction Step ---")
+        simulated_scans_path = os.path.join(exam_output_dir, "simulated_scans")
+        
+        solutions_per_model = {}
+        solutions_per_model_for_correction = {}
+        max_score = 0
+        try:
+            solution_files = glob.glob(os.path.join(exam_output_dir, "exam_model_*_questions.json"))
+            for sol_file in solution_files:
+                model_id_match = re.search(r"exam_model_(\w+)_questions.json", os.path.basename(sol_file))
+                if model_id_match:
+                    model_id = model_id_match.group(1)
+                    exam = PexamExam.model_validate_json(Path(sol_file).read_text(encoding="utf-8"))
+                    solutions_per_model[model_id] = {q.id: q.model_dump() for q in exam.questions}
+                    solutions_for_correction = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
+                    solutions_per_model_for_correction[model_id] = solutions_for_correction
+                    if len(solutions_for_correction) > max_score:
+                        max_score = len(solutions_for_correction)
+        except Exception as e:
+            logging.error(f"Failed to load solutions for the test run: {e}")
+            return
+
+        correction_success = correct_exams.correct_exams(
+            input_path=simulated_scans_path,
+            solutions_per_model=solutions_per_model_for_correction,
+            output_dir=correction_output_dir
+        )
+        
+        if correction_success:
+            logging.info("--- Running Analysis Step ---")
+            results_csv = os.path.join(correction_output_dir, "correction_results.csv")
+            if os.path.exists(results_csv):
+                analysis.analyze_results(
+                    csv_filepath=results_csv,
+                    max_score=max_score,
+                    output_dir=correction_output_dir,
+                    solutions_per_model=solutions_per_model
+                )
+        logging.info("--- Test command finished successfully! ---")
+
+    elif args.command == "correct":
         if not os.path.exists(args.input_path):
             logging.error(f"Input path not found: {args.input_path}")
             return
@@ -156,12 +247,23 @@ def main():
                 logging.error(f"Analysis skipped: correction results file not found at {results_csv}")
     
     elif args.command == "generate":
-        if not os.path.exists(args.questions_json):
-            logging.error(f"Questions JSON file not found: {args.questions_json}")
-            return
+        questions_path = Path(args.questions_json)
         
+        # Check if the file exists at the given path. If not, try to find it in the package assets.
+        if not questions_path.exists():
+            try:
+                package_dir = Path(pexams.__file__).parent
+                asset_path = package_dir / "assets" / args.questions_json
+                if asset_path.exists():
+                    questions_path = asset_path
+                else:
+                    raise FileNotFoundError
+            except (FileNotFoundError, AttributeError):
+                logging.error(f"Questions JSON file not found at '{args.questions_json}' or as a built-in asset.")
+                return
+
         try:
-            exam = PexamExam.model_validate_json(Path(args.questions_json).read_text(encoding="utf-8"))
+            exam = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
             questions = exam.questions
         except ValidationError as e:
             logging.error(f"Failed to validate questions JSON file: {e}")
@@ -169,6 +271,14 @@ def main():
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse questions JSON file: {e}")
             return
+            
+        # Resolve paths for images relative to the questions JSON file
+        json_dir = questions_path.parent
+        for q in questions:
+            if q.image_source and not Path(q.image_source).is_absolute():
+                image_path = (json_dir / q.image_source).resolve()
+                if image_path.exists():
+                    q.image_source = str(image_path)
 
         generate_exams.generate_exams(
             questions=questions,

@@ -79,19 +79,19 @@ This will create a `correction_results` directory with a CSV report and annotate
 
 ## Visual examples
 
-You can view an example of a fully generated exam PDF [here](media/example_model_1.pdf).
+You can view an example of a fully generated exam PDF [here](https://github.com/OscarPellicer/pexams/blob/main/media/example_model_1.pdf).
 
 Below is an example of a simulated answer sheet and the annotated, corrected version that the library produces.
 
 | Simulated Scan | Corrected Scan |
 | :---: | :---: |
-| <img src="media/simulated.png" width="400"> | <img src="media/corrected.png" width="400"> |
+| <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/simulated.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/corrected.png" width="400"> |
 
 The analysis module also generates a plot showing the distribution of answers for each question, which helps in identifying problematic questions, as well as a plot showing the distribution of marks, which helps in assessing the fairness of the exam.
 
 | Answer distribution | Marks distribution |
 | :---: | :---: |
-| <img src="media/answer_distribution.png" width="400"> | <img src="media/mark_distribution.png" width="400"> |
+| <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution.png" width="400"> |
 
 ## Usage
 

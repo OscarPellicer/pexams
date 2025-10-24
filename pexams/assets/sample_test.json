@@ -47,7 +47,7 @@
         {
             "id": 3,
             "text": "What animal is shown in the image below?",
-            "image_source": "media/test_image.jpg",
+            "image_source": "assets/media/test_image.jpg",
             "options": [
                 {
                     "text": "A cat",

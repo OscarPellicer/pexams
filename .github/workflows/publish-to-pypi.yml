@@ -25,20 +25,8 @@ jobs:
 
       - name: Run tests
         run: |
-          # Generate the sample exams with simulated scans
-          pexams generate \
-            --questions-json sample_test.json \
-            --output-dir ./exam_output \
-            --num-models 2 \
-            --generate-fakes 4 \
-            --columns 2 \
-            --exam-title "CI Test Exam"
-
-          # Correct the simulated scans
-          pexams correct \
-            --input-path ./exam_output/simulated_scans/ \
-            --exam-dir ./exam_output/ \
-            --output-dir ./correction_results
+          # The `pexams test` command will use the bundled assets to run a full generate/correct cycle
+          pexams test --output-dir ./ci_test_output
 
       - name: Build package
         run: |
