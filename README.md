@@ -11,15 +11,6 @@ NOTE: This library is still in development and is not yet ready for production u
 
 The library has been tested on Python 3.11.
 
-<!-- may not be needed
-### Prerequisites
-
-- **Poppler**: Needed for `pdf2image` to convert PDFs to images during correction.
-  - **Windows**: `conda install -c conda-forge poppler`
-  - **macOS**: `brew install poppler`
-  - **Debian/Ubuntu**: `sudo apt-get install poppler-utils` 
-  - -->
-
 ### 1. Install the library
 
 You can install the library from PyPI:
@@ -47,6 +38,14 @@ pip install -e .
 playwright install chromium
 ```
 This command only needs to be run once.
+
+### 3. Install Poppler
+
+You may also need to install Poppler, which is needed for `pdf2image` to convert PDFs to images during correction, and also for generating simulated scans:
+
+  - **Windows**: `conda install -c conda-forge poppler`
+  - **macOS**: `brew install poppler`
+  - **Debian/Ubuntu**: `sudo apt-get install poppler-utils`
 
 ## Quick start
 
