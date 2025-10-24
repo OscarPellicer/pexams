@@ -1,0 +1,93 @@
+{
+    "questions": [
+        {
+            "id": 1,
+            "text": "What is the output of the following Python code? `python\nx = [1, 2, 3]; y = x; y.append(4); print(x)`",
+            "options": [
+                {
+                    "text": "`[1, 2, 3]`",
+                    "is_correct": false
+                },
+                {
+                    "text": "`[1, 2, 3, 4]`",
+                    "is_correct": true
+                },
+                {
+                    "text": "`[1, 2, 3, [4]]`",
+                    "is_correct": false
+                },
+                {
+                    "text": "A `SyntaxError` is raised.",
+                    "is_correct": false
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "text": "What is the value of the following integral?$\\int_0^\\infty e^{-x^2} dx$",
+            "options": [
+                {
+                    "text": "$\\frac{\\sqrt{\\pi}}{2}$",
+                    "is_correct": true
+                },
+                {
+                    "text": "$\\sqrt{\\pi}$",
+                    "is_correct": false
+                },
+                {
+                    "text": "$\\frac{\\pi}{2}$",
+                    "is_correct": false
+                },
+                {
+                    "text": "$\\pi$",
+                    "is_correct": false
+                }
+            ]
+        },
+        {
+            "id": 3,
+            "text": "What animal is shown in the image below?",
+            "image_source": "test_image.jpg",
+            "options": [
+                {
+                    "text": "A cat",
+                    "is_correct": false
+                },
+                {
+                    "text": "A dog",
+                    "is_correct": true
+                },
+                {
+                    "text": "A bird",
+                    "is_correct": false
+                },
+                {
+                    "text": "A fish",
+                    "is_correct": false
+                }
+            ]
+        },
+        {
+            "id": 4,
+            "text": "Which of the following is NOT a primary color?",
+            "options": [
+                {
+                    "text": "Red",
+                    "is_correct": false
+                },
+                {
+                    "text": "Green",
+                    "is_correct": true
+                },
+                {
+                    "text": "Blue",
+                    "is_correct": false
+                },
+                {
+                    "text": "Yellow",
+                    "is_correct": false
+                }
+            ]
+        }
+    ]
+}
