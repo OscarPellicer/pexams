@@ -22,13 +22,17 @@ The library has been tested on Python 3.11.
 
 ### 1. Install the library
 
-You can install the library directly from GitHub:
+You can install the library from PyPI:
+```bash
+pip install pexams
+```
 
+If the previous command failed, you can install the library from GitHub:
 ```bash
 pip install git+https://github.com/OscarPellicer/pexams.git
 ```
 
-Alternatively, you can clone the repository and install it in editable mode, which is useful for development:
+Alternatively, you can clone the repository and install it in editable mode, which is useful for development, testing and pushing changes to the repository:
 
 ```bash
 git clone https://github.com/OscarPellicer/pexams.git
