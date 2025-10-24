@@ -149,11 +149,21 @@ def _generate_questions_markdown(
 ) -> str:
     """Generates the Markdown for the question pages."""
     md_parts = []
+    # Configure markdown extensions
+    extensions = [
+        'pymdownx.arithmatex',
+        'pymdownx.inlinehilite',
+        'fenced_code',
+        'codehilite'
+    ]
+    extension_configs = {
+        'pymdownx.arithmatex': {'generic': True}
+    }
     for q in questions:
         md_parts.append('\n<div class="question-wrapper">\n')
 
         # Convert question text to HTML, ensuring it's treated as a single paragraph block
-        question_text_html = markdown.markdown(q.text.replace('\n', ' <br> ')).strip()
+        question_text_html = markdown.markdown(q.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
         # Remove paragraph tags that markdown lib might add
         if question_text_html.startswith("<p>"):
             question_text_html = question_text_html[3:-4]
@@ -161,16 +171,17 @@ def _generate_questions_markdown(
         md_parts.append(f'<div class="question-text"><b>{q.id}.</b> {question_text_html}</div>\n')
         
         if q.image_source:
-            src = q.image_source
-            if os.path.exists(src):
-                src = f"file:///{os.path.abspath(src)}"
-            md_parts.append(f'<img src="{src}" alt="Image for question {q.id}">\n')
+            # Convert the path to a file URI to be safe for HTML rendering
+            src_path = Path(q.image_source)
+            if src_path.exists():
+                src = src_path.as_uri()
+                md_parts.append(f'<img src="{src}" alt="Image for question {q.id}">\n')
 
         md_parts.append('<div class="options-block">')
         for i, option in enumerate(q.options):
             option_label = chr(ord('A') + i)
             # Convert option text to HTML, ensuring it's a single paragraph block
-            option_text_html = markdown.markdown(option.text.replace('\n', ' <br> ')).strip()
+            option_text_html = markdown.markdown(option.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
             if option_text_html.startswith("<p>"):
                 option_text_html = option_text_html[3:-4]
 
@@ -290,7 +301,7 @@ def generate_exams(
             id_length=id_length
         )
         questions_md = _generate_questions_markdown(model_questions)
-        questions_html = markdown.markdown(questions_md, extensions=['fenced_code', 'codehilite'])
+        questions_html = markdown.markdown(questions_md)
         
         final_html_content = f"""
 <!DOCTYPE html>
@@ -299,6 +310,8 @@ def generate_exams(
     <meta charset="UTF-8">
     <title>{exam_title} - Model {i}</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Roboto:ital,wght@0,300;0,400;0,500;0,700&display=swap">
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <style>
         {css_content}
     </style>
@@ -328,6 +341,10 @@ def generate_exams(
                 page = browser.new_page()
                 # Use file:// protocol to load the local HTML file
                 page.goto(f"file:///{os.path.abspath(html_filepath)}")
+                
+                # Wait for MathJax to finish rendering.
+                # typesetPromise() will not resolve until all math is rendered.
+                page.evaluate("MathJax.typesetPromise()")
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
 

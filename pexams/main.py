@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import glob
 import re
+from typing import Optional, List
 
 from pexams import correct_exams
 from pexams import generate_exams
@@ -12,6 +13,55 @@ from pexams import analysis
 from pexams.schemas import PexamExam, PexamQuestion
 from pydantic import ValidationError
 import pexams
+
+def _load_and_prepare_questions(questions_json: str) -> Optional[List[PexamQuestion]]:
+    """Loads questions from a JSON file, resolving bundled assets and image paths."""
+    questions_path = Path(questions_json)
+
+    # Check if the file exists at the given path. If not, try to find it in the package assets.
+    if not questions_path.exists():
+        try:
+            package_dir = Path(pexams.__file__).parent
+            asset_path = package_dir / "assets" / questions_json
+            if asset_path.exists():
+                questions_path = asset_path
+            else:
+                raise FileNotFoundError
+        except (FileNotFoundError, AttributeError):
+            logging.error(f"Questions JSON file not found at '{questions_json}' or as a built-in asset.")
+            return None
+
+    try:
+        exam = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
+        questions = exam.questions
+    except ValidationError as e:
+        logging.error(f"Failed to validate questions JSON file: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse questions JSON file: {e}")
+        return None
+        
+    # Resolve paths for images, making them absolute before passing them to the generator.
+    json_dir = questions_path.parent
+    for q in questions:
+        if q.image_source and not Path(q.image_source).is_absolute():
+            # First, try to resolve the path relative to the JSON file's directory.
+            image_path_rel_json = (json_dir / q.image_source).resolve()
+            
+            # If that path doesn't exist, try resolving relative to the current working directory.
+            image_path_rel_cwd = Path(q.image_source).resolve()
+
+            if image_path_rel_json.exists():
+                q.image_source = str(image_path_rel_json)
+            elif image_path_rel_cwd.exists():
+                q.image_source = str(image_path_rel_cwd)
+            else:
+                logging.warning(
+                    f"Could not find image for question {q.id} at '{q.image_source}'. "
+                    f"Checked relative to JSON file and current directory."
+                )
+    return questions
+
 
 def main():
     """Main CLI entry point for the pexams library."""
@@ -100,6 +150,7 @@ def main():
     generate_parser.add_argument("--keep-html", action="store_true", help="Keep the intermediate HTML files.")
     generate_parser.add_argument("--generate-fakes", type=int, default=0, help="Generate a number of simulated scans with fake answers for testing the correction process. Default is 0.")
     generate_parser.add_argument("--generate-references", action="store_true", help="Generate a reference scan with correct answers for each model.")
+    generate_parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set the logging level.")
     
     args = parser.parse_args()
     
@@ -114,26 +165,10 @@ def main():
 
         # --- Generation Step ---
         logging.info("--- Running Generation Step ---")
-        package_dir = Path(pexams.__file__).parent
-        questions_path = package_dir / "assets" / "sample_test.json"
         
-        if not questions_path.exists():
-            logging.error("Could not find the bundled 'sample_test.json'.")
+        questions = _load_and_prepare_questions("sample_test.json")
+        if questions is None:
             return
-
-        try:
-            exam = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
-            questions = exam.questions
-        except (ValidationError, json.JSONDecodeError) as e:
-            logging.error(f"Failed to load or parse the bundled 'sample_test.json': {e}")
-            return
-            
-        json_dir = questions_path.parent
-        for q in questions:
-            if q.image_source and not Path(q.image_source).is_absolute():
-                image_path = (json_dir / q.image_source).resolve()
-                if image_path.exists():
-                    q.image_source = str(image_path)
 
         generate_exams.generate_exams(
             questions=questions,
@@ -247,38 +282,11 @@ def main():
                 logging.error(f"Analysis skipped: correction results file not found at {results_csv}")
     
     elif args.command == "generate":
-        questions_path = Path(args.questions_json)
+        questions = _load_and_prepare_questions(args.questions_json)
+        if questions is None:
+            return
         
-        # Check if the file exists at the given path. If not, try to find it in the package assets.
-        if not questions_path.exists():
-            try:
-                package_dir = Path(pexams.__file__).parent
-                asset_path = package_dir / "assets" / args.questions_json
-                if asset_path.exists():
-                    questions_path = asset_path
-                else:
-                    raise FileNotFoundError
-            except (FileNotFoundError, AttributeError):
-                logging.error(f"Questions JSON file not found at '{args.questions_json}' or as a built-in asset.")
-                return
-
-        try:
-            exam = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
-            questions = exam.questions
-        except ValidationError as e:
-            logging.error(f"Failed to validate questions JSON file: {e}")
-            return
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse questions JSON file: {e}")
-            return
-            
-        # Resolve paths for images relative to the questions JSON file
-        json_dir = questions_path.parent
-        for q in questions:
-            if q.image_source and not Path(q.image_source).is_absolute():
-                image_path = (json_dir / q.image_source).resolve()
-                if image_path.exists():
-                    q.image_source = str(image_path)
+        keep_html = args.keep_html or (hasattr(args, 'log_level') and args.log_level == 'DEBUG')
 
         generate_exams.generate_exams(
             questions=questions,
@@ -290,7 +298,7 @@ def main():
             columns=args.columns,
             id_length=args.id_length,
             lang=args.lang,
-            keep_html=args.keep_html,
+            keep_html=keep_html,
             font_size=args.font_size,
             generate_fakes=args.generate_fakes,
             generate_references=args.generate_references

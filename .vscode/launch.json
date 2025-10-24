@@ -25,7 +25,9 @@
                 "--exam-course",
                 "Introduction to Everything",
                 "--exam-date",
-                "2025-10-26"
+                "2025-10-26",
+                "--log-level",
+                "DEBUG"
             ],
             "justMyCode": true
         },
@@ -43,6 +45,14 @@
                 "--output-dir",
                 "./correction_results"
             ],
+            "justMyCode": true
+        },
+        {
+            "name": "Pexams: Test",
+            "type": "python",
+            "request": "launch",
+            "module": "pexams.main",
+            "args": ["test"],
             "justMyCode": true
         }
     ]
