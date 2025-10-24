@@ -30,7 +30,8 @@ dependencies = [
     "torch",
     "torchvision",
     "transformers",
-    "timm"
+    "timm",
+    "pymdown-extensions"
 ]
 
 [project.scripts]
