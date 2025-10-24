@@ -1,0 +1,52 @@
+name: Publish Python Package to PyPI
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build-and-publish:
+    name: Build and publish Python 🐍 distributions 📦 to PyPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          playwright install chromium
+
+      - name: Run tests
+        run: |
+          # Generate the sample exams with simulated scans
+          pexams generate \
+            --questions-json sample_test.json \
+            --output-dir ./exam_output \
+            --num-models 2 \
+            --generate-fakes 4 \
+            --columns 2 \
+            --exam-title "CI Test Exam"
+
+          # Correct the simulated scans
+          pexams correct \
+            --input-path ./exam_output/simulated_scans/ \
+            --exam-dir ./exam_output/ \
+            --output-dir ./correction_results
+
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
