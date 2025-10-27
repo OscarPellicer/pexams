@@ -109,6 +109,12 @@ def main():
         default=None,
         help="Comma-separated list of question numbers to remove from score calculation (e.g., '3,4')."
     )
+    correct_parser.add_argument(
+        "--void-questions-nicely",
+        type=str,
+        default=None,
+        help="Comma-separated list of question IDs to void 'nicely'. If correct, it counts. If incorrect, it's removed from the total score calculation for that student."
+    )
 
     # --- Test Command ---
     test_parser = subparsers.add_parser(
@@ -176,7 +182,13 @@ def main():
             num_models=2,
             generate_fakes=4,
             columns=2,
-            exam_title="CI Test Exam"
+            exam_title="CI Test Exam",
+            exam_course="Test Course",
+            exam_date="2025-01-01",
+            id_length=8,
+            lang="es",
+            generate_references=True,
+            font_size="10pt"
         )
         
         # --- Correction Step ---
@@ -216,7 +228,9 @@ def main():
                     csv_filepath=results_csv,
                     max_score=max_score,
                     output_dir=correction_output_dir,
-                    solutions_per_model=solutions_per_model
+                    solutions_per_model=solutions_per_model,
+                    void_questions_str="1",
+                    void_questions_nicely_str="2"
                 )
         logging.info("--- Test command finished successfully! ---")
 
@@ -276,7 +290,8 @@ def main():
                     max_score=max_score,
                     output_dir=args.output_dir,
                     void_questions_str=args.void_questions,
-                    solutions_per_model=solutions_per_model
+                    solutions_per_model=solutions_per_model,
+                    void_questions_nicely_str=args.void_questions_nicely
                 )
             else:
                 logging.error(f"Analysis skipped: correction results file not found at {results_csv}")

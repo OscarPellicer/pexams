@@ -135,15 +135,21 @@ Generates exam PDFs and solution files from a questions JSON file.
 pexams generate --questions-json <path> --output-dir <path> [OPTIONS]
 ```
 
-**Common options:**
-- `--num-models <int>`: Number of exam variations to generate (default: 4).
-- `--exam-title <str>`: Title for the exam (default: "Final Exam").
+**Arguments:**
+- `--questions-json <path>`: (Required) Path to the JSON file containing the exam questions.
+- `--output-dir <path>`: (Required) Directory to save the generated exam PDFs and solution files.
+- `--num-models <int>`: Number of different exam models to generate (default: 4).
+- `--exam-title <str>`: Title of the exam (default: "Final Exam").
 - `--exam-course <str>`: Course name for the exam (optional).
 - `--exam-date <str>`: Date of the exam (optional).
-- `--columns <int>`: Number of question columns (1, 2, or 3; default: 1).
-- `--font-size <str>`: Base font size, e.g., '10pt' (default: '11pt').
-- `--generate-fakes <int>`: Number of simulated scans to generate for testing.
-- `--log-level DEBUG`: Keeps the intermediate HTML files for debugging.
+- `--columns <int>`: Number of columns for the questions (1, 2, or 3; default: 1).
+- `--font-size <str>`: Base font size for the exam (e.g., '10pt', '12px'; default: '11pt').
+- `--id-length <int>`: Number of boxes for the student ID (default: 10).
+- `--lang <str>`: Language for the answer sheet labels (e.g., 'en', 'es'; default: 'en').
+- `--keep-html`: If set, keeps the intermediate HTML files used for PDF generation.
+- `--generate-fakes <int>`: Generates a number of simulated scans with fake answers for testing the correction process (default: 0).
+- `--generate-references`: If set, generates a reference scan with the correct answers marked for each model.
+- `--log-level <level>`: Set the logging level (DEBUG, INFO, WARNING, ERROR; default: INFO).
 
 #### `pexams correct`
 Corrects scanned exams and runs an analysis.
@@ -154,5 +160,145 @@ pexams correct --input-path <path> --exam-dir <path> --output-dir <path> [OPTION
 - The `--input-path` can be a single PDF file or a folder of images (PNG, JPG).
 - The `--exam-dir` must contain the `exam_model_*_questions.json` files generated alongside the exam PDFs.
 
-**Common options:**
-- `--void-questions <str>`: Comma-separated list of question IDs to exclude from scoring (e.g., '3,4').
+**Arguments:**
+- `--input-path <path>`: (Required) Path to the single PDF file or a folder containing scanned answer sheets.
+- `--exam-dir <path>`: (Required) Path to the directory containing the `exam_model_*_questions.json` solution files.
+- `--output-dir <path>`: (Required) Directory to save the correction results CSV and any debug images.
+- `--void-questions <str>`: Comma-separated list of question IDs to exclude from scoring for all students (e.g., '3,4').
+- `--void-questions-nicely <str>`: Comma-separated list of question IDs to void "nicely". If a student answered it correctly, the question counts. Otherwise, it is removed from the maximum possible score for that student.
+- `--log-level <level>`: Set the logging level (DEBUG, INFO, WARNING, ERROR; default: INFO).
+
+**Important Note on Voiding Questions:** The question IDs to be used with the `--void-questions` and `--void-questions-nicely` options refer to the question numbers as they appear on the final generated exam PDFs (e.g., 1, 2, 3...). These may be different from the original `id` fields in your source JSON file, as `pexams` shuffles and re-numbers the questions for each exam generation session.
+
+#### `pexams test`
+Runs a full generate/correct/analyze cycle using bundled sample data.
+
+```bash
+pexams test [OPTIONS]
+```
+
+**Arguments:**
+- `--output-dir <path>`: Directory to save the test output (default: `./pexams_test_output`).
+
+## Python API Usage
+
+In addition to the CLI, you can use `pexams` as a Python library.
+
+### 1. Generating Exams
+
+To generate exams, use the `pexams.generate_exams.generate_exams` function.
+
+```python
+from pexams import generate_exams
+from pexams.schemas import PexamQuestion, PexamExam
+from pexams.main import _load_and_prepare_questions
+
+# You can load questions from a JSON file
+# questions = _load_and_prepare_questions("path/to/your/questions.json")
+
+# Or define them manually
+questions = [
+    PexamQuestion(
+        id=1,
+        text="What is 2+2?",
+        options=[
+            {"text": "3", "is_correct": False},
+            {"text": "4", "is_correct": True},
+        ]
+    )
+]
+
+if questions:
+    generate_exams.generate_exams(
+        questions=questions,
+        output_dir="./my_exams",
+        num_models=2,
+        exam_title="Quiz 1"
+    )
+```
+
+### 2. Correcting Exams
+
+To correct exams, you first need to load the solutions that were generated, then call `pexams.correct_exams.correct_exams`.
+
+```python
+import os
+import glob
+import re
+from pathlib import Path
+from pexams import correct_exams
+from pexams.schemas import PexamExam
+
+exam_dir = "./my_exams" # The output from generate_exams
+solutions_per_model = {}
+solution_files = glob.glob(os.path.join(exam_dir, "exam_model_*_questions.json"))
+for sol_file in solution_files:
+    model_id_match = re.search(r"exam_model_(\w+)_questions.json", os.path.basename(sol_file))
+    if model_id_match:
+        model_id = model_id_match.group(1)
+        exam = PexamExam.model_validate_json(Path(sol_file).read_text(encoding="utf-8"))
+        solutions_for_correction = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
+        solutions_per_model[model_id] = solutions_for_correction
+
+correct_exams.correct_exams(
+    input_path="./my_exams/simulated_scans", # Path to PDF or folder of images
+    solutions_per_model=solutions_per_model,
+    output_dir="./correction_output"
+)
+```
+
+### 3. Analyzing Results
+
+After correction, you can run the analysis using `pexams.analysis.analyze_results`.
+
+```python
+from pexams import analysis
+
+# You need the full solution details for the analysis plots.
+# See pexams/main.py for a complete example of how to load this.
+solutions_per_model_for_analysis = {}
+max_score = 0
+exam_dir = "./my_exams" 
+try:
+    solution_files = glob.glob(os.path.join(exam_dir, "exam_model_*_questions.json"))
+    for sol_file in solution_files:
+        model_id_match = re.search(r"exam_model_(\w+)_questions.json", os.path.basename(sol_file))
+        if model_id_match:
+            model_id = model_id_match.group(1)
+            exam = PexamExam.model_validate_json(Path(sol_file).read_text(encoding="utf-8"))
+            
+            # Store full question data for analysis plots
+            solutions_per_model_for_analysis[model_id] = {q.id: q.model_dump() for q in exam.questions}
+            
+            # Determine the max score from the solutions
+            solutions_for_correction = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
+            if len(solutions_for_correction) > max_score:
+                max_score = len(solutions_for_correction)
+except Exception as e:
+    print(f"Failed to load solutions for analysis: {e}")
+
+
+analysis.analyze_results(
+    csv_filepath="./correction_output/correction_results.csv",
+    max_score=max_score,
+    solutions_per_model=solutions_per_model_for_analysis,
+    output_dir="./correction_output",
+    void_questions_str="3", # Optional: void question 3 for all students
+    void_questions_nicely_str="4" # Optional: void question 4 "nicely"
+)
+```
+
+
+## Contributing
+
+Pull requests are welcome! Please feel free to submit an issue or pull request.
+
+## Contact
+
+`oscar.pellicer at uv dot es`
+
+## TODO
+
+- Test that the correction resulst are actually correct when running the test command.
+- Improve OCR speed by either concatenating the ID images into a single image, or batching them.
+- Allow to pass a list of student IDs to the correction command, so that wrongly OCRd IDs can be matched to the correct student ID by using Levenshtein distance.

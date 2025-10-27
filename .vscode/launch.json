@@ -26,8 +26,15 @@
                 "Introduction to Everything",
                 "--exam-date",
                 "2025-10-26",
-                "--log-level",
-                "DEBUG"
+                // "--log-level",
+                // "DEBUG",
+                "--id-length",
+                "8",
+                "--lang",
+                "es",
+                "--generate-references",
+                "--font-size",
+                "10pt"
             ],
             "justMyCode": true
         },
@@ -43,7 +50,13 @@
                 "--exam-dir",
                 "./exam_output/",
                 "--output-dir",
-                "./correction_results"
+                "./correction_results",
+                "--void-questions",
+                "1",
+                "--void-questions-nicely",
+                "2",
+                // "--log-level",
+                // "DEBUG"
             ],
             "justMyCode": true
         },

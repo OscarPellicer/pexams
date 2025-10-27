@@ -11,9 +11,14 @@ from matplotlib.patches import Patch
 
 def _plot_answer_distribution(df, solutions_per_model, output_dir):
     """
-    Plots the distribution of answers for each question in a single grouped bar chart,
-    normalized to model 1's answer order.
+    Plots the distribution of answers for each question in grouped bar charts,
+    normalized to a reference model's answer order. Creates multiple plot files
+    if there are many questions.
     """
+    if not solutions_per_model:
+        logging.warning("Cannot generate answer distribution plot: solutions_per_model is empty.")
+        return
+
     # Assuming the first model key is the reference (e.g., "1")
     ref_model_key = sorted(solutions_per_model.keys())[0]
     ref_solutions = solutions_per_model[ref_model_key]
@@ -21,7 +26,8 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
     # Create a mapping from option text to the reference index for each question
     option_text_to_ref_idx = {}
     for q_id, q_data in ref_solutions.items():
-        option_text_to_ref_idx[q_id] = {opt['text']: i for i, opt in enumerate(q_data['options'])}
+        if 'options' in q_data:
+            option_text_to_ref_idx[q_id] = {opt['text']: i for i, opt in enumerate(q_data['options'])}
 
     # Translate all student answers to the reference model's option indexing
     all_answers_translated = []
@@ -37,7 +43,11 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
                 continue
             
             q_id = int(q_num_str.split('_')[1])
-            if q_id not in current_model_solutions or not isinstance(ans_char, str) or ans_char == 'NA':
+            if q_id not in current_model_solutions or not isinstance(ans_char, str):
+                continue
+            
+            if ans_char == 'NA':
+                all_answers_translated.append({'question_id': q_id, 'ref_answer_idx': 'NA'})
                 continue
 
             # Convert character answer to index (A=0, B=1, ...)
@@ -45,8 +55,11 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
             
             # Get the text of the option the student chose
             try:
-                chosen_option_text = current_model_solutions[q_id]['options'][ans_idx]['text']
-            except IndexError:
+                if 'options' in current_model_solutions[q_id] and ans_idx < len(current_model_solutions[q_id]['options']):
+                    chosen_option_text = current_model_solutions[q_id]['options'][ans_idx]['text']
+                else:
+                    continue
+            except (IndexError, KeyError):
                 continue
 
             # Find the corresponding index in the reference model
@@ -63,65 +76,107 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
     question_ids = sorted(ref_solutions.keys())
     num_questions = len(question_ids)
     
-    max_num_options = 0
-    if ref_solutions:
-        max_num_options = max(len(q_data['options']) for q_data in ref_solutions.values())
+    QUESTIONS_PER_PLOT = 20  # Max questions per plot file
+    num_plots = int(np.ceil(num_questions / QUESTIONS_PER_PLOT))
 
-    answer_counts_by_q = {
-        q_id: translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
-        for q_id in question_ids
-    }
-
-    fig, ax = plt.subplots(figsize=(max(15, num_questions * 2), 8))
-    x = np.arange(num_questions)
-    width = 0.8 / max_num_options if max_num_options > 0 else 0.8
-
-    for i in range(max_num_options):
-        counts = [answer_counts_by_q[q_id].get(i, 0) for q_id in question_ids]
-        offset = (i - (max_num_options - 1) / 2) * width
+    for plot_idx in range(num_plots):
+        start_idx = plot_idx * QUESTIONS_PER_PLOT
+        end_idx = start_idx + QUESTIONS_PER_PLOT
+        plot_question_ids = question_ids[start_idx:end_idx]
         
-        colors = []
-        for q_id in question_ids:
-            correct_idx = ref_solutions[q_id]['correct_answer_index']
-            # Only add a bar if this option index is valid for the question
-            if i < len(ref_solutions[q_id]['options']):
-                colors.append('green' if i == correct_idx else 'red')
+        num_q_in_plot = len(plot_question_ids)
+        if num_q_in_plot == 0:
+            continue
+
+        # Adjust figure width based on number of questions in this subplot
+        fig_width = max(10, min(20, num_q_in_plot * 1.8))
+        fig, ax = plt.subplots(figsize=(fig_width, 8))
+
+        answer_counts_by_q = {
+            q_id: translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
+            for q_id in plot_question_ids
+        }
+
+        max_num_options = 0
+        if ref_solutions:
+            max_num_options = max(len(ref_solutions[q_id].get('options', [])) for q_id in plot_question_ids)
+
+        num_bars_per_group = max_num_options + 1  # +1 for "NA"
+        group_width = 0.8
+        bar_width = group_width / num_bars_per_group
+        
+        x = np.arange(num_q_in_plot)
+
+        for i in range(max_num_options + 1): # Loop through options + NA
+            is_na_bar = (i == max_num_options)
+            
+            if is_na_bar:
+                counts = [answer_counts_by_q.get(q_id, pd.Series()).get('NA', 0) for q_id in plot_question_ids]
             else:
-                # This is a placeholder, this bar won't be plotted
-                colors.append('none')
+                counts = [answer_counts_by_q.get(q_id, pd.Series()).get(i, 0) for q_id in plot_question_ids]
 
-        # Filter positions, counts, and colors for valid options
-        valid_positions = [x[j] + offset for j, q_id in enumerate(question_ids) if i < len(ref_solutions[q_id]['options'])]
-        valid_counts = [counts[j] for j, q_id in enumerate(question_ids) if i < len(ref_solutions[q_id]['options'])]
-        valid_colors = [c for c in colors if c != 'none']
+            offset = (i - (num_bars_per_group - 1) / 2) * bar_width
+            
+            colors = []
+            if is_na_bar:
+                colors = ['#7f7f7f'] * num_q_in_plot # Gray for NA
+            else:
+                for q_id in plot_question_ids:
+                    correct_idx = ref_solutions[q_id].get('correct_answer_index')
+                    if 'options' in ref_solutions[q_id] and i < len(ref_solutions[q_id]['options']):
+                        colors.append('#2ca02c' if i == correct_idx else '#d62728')
+                    else:
+                        colors.append('none')
+
+            valid_positions = [x[j] + offset for j, c in enumerate(colors) if c != 'none']
+            valid_counts = [counts[j] for j, c in enumerate(colors) if c != 'none']
+            valid_colors = [c for c in colors if c != 'none']
+            
+            if is_na_bar: # Override for NA bar
+                valid_positions = x + offset
+                valid_counts = counts
+                valid_colors = colors
+
+            if len(valid_positions) > 0:
+                rects = ax.bar(valid_positions, valid_counts, bar_width * 0.95, color=valid_colors)
+                
+                # Add text labels on top of the bars
+                label_text = "NA" if is_na_bar else chr(ord('A') + i)
+                labels = [label_text if count > 0 else "" for count in valid_counts]
+                ax.bar_label(rects, labels=labels, padding=3, fontsize=8, color='black')
+
+        q_start, q_end = plot_question_ids[0], plot_question_ids[-1]
+        ax.set_title(f'Answer Distribution for Questions {q_start}-{q_end}', fontsize=16)
+        ax.set_xlabel('Question ID', fontsize=12)
+        ax.set_ylabel('Number of Students', fontsize=12)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'Q{q_id}' for q_id in plot_question_ids])
         
-        if valid_positions:
-            ax.bar(valid_positions, valid_counts, width, label=f'Option {chr(ord("A") + i)}', color=valid_colors)
+        max_count = translated_df[translated_df['question_id'].isin(plot_question_ids)].groupby('question_id').size().max() if not translated_df.empty else 0
 
-    ax.set_title('Answer Distribution per Question', fontsize=16)
-    ax.set_xlabel('Question ID', fontsize=12)
-    ax.set_ylabel('Number of Students', fontsize=12)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f'Q{q_id}' for q_id in question_ids])
-    
-    max_count = 0
-    if all_answers_translated:
-        max_count = translated_df.groupby('question_id')['ref_answer_idx'].count().max()
+        if max_count > 0:
+            ax.set_ylim(top=max_count * 1.15)
+            if max_count <= 20:
+                ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
-    ax.set_yticks(np.arange(0, max_count + 2, 1))
-    
-    # Custom legend for colors
-    legend_elements = [Patch(facecolor='green', label='Correct Answer'),
-                       Patch(facecolor='red', label='Incorrect Answer')]
-    ax.legend(handles=legend_elements)
+        legend_elements = [
+            Patch(facecolor='#2ca02c', edgecolor='black', label='Correct Answer'),
+            Patch(facecolor='#d62728', edgecolor='black', label='Incorrect Answer'),
+            Patch(facecolor='#7f7f7f', edgecolor='black', label='Not Answered (NA)')
+        ]
+        
+        ax.legend(handles=legend_elements, loc='upper right', fontsize='small')
 
-    plt.tight_layout()
-    plot_filename = os.path.join(output_dir, "answer_distribution.png")
-    try:
-        plt.savefig(plot_filename)
-        logging.info(f"Answer distribution plot saved to {os.path.abspath(plot_filename)}")
-    except Exception as e:
-        logging.error(f"Error saving answer distribution plot: {e}")
+        plt.tight_layout()
+        
+        suffix = f"_q{q_start}-{q_end}" if num_plots > 1 else ""
+        plot_filename = os.path.join(output_dir, f"answer_distribution{suffix}.png")
+        try:
+            plt.savefig(plot_filename)
+            logging.info(f"Answer distribution plot saved to {os.path.abspath(plot_filename)}")
+        except Exception as e:
+            logging.error(f"Error saving answer distribution plot: {e}")
+        plt.close(fig)
 
 def parse_q_list(q_str: Optional[str]) -> List[int]:
     """Converts a comma-separated string of question numbers to a sorted list of unique integers."""
@@ -133,7 +188,14 @@ def parse_q_list(q_str: Optional[str]) -> List[int]:
         logging.warning(f"Invalid format for question list string: '{q_str}'. Expected comma-separated numbers. Returning empty list.")
         return []
 
-def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str: Optional[str] = None, void_questions_nicely_str: Optional[str] = None, solutions_per_model=None):
+def analyze_results(
+    csv_filepath, 
+    max_score, 
+    solutions_per_model, 
+    output_dir=".", 
+    void_questions_str: Optional[str] = None, 
+    void_questions_nicely_str: Optional[str] = None
+):
     """
     Analyzes exam results from a CSV file, scales scores to 0-10, 
     plots score distribution, and shows statistics.
@@ -151,53 +213,73 @@ def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str:
         return
 
     if 'score' not in df.columns:
-        logging.error(f"Error: 'score' column not found in {csv_filepath}.")
+        logging.error("Error: 'score' column not found in CSV. Cannot perform analysis.")
         return
-
-    df['score_numeric'] = pd.to_numeric(df['score'], errors='coerce')
-    
-    original_rows = len(df)
-    df.dropna(subset=['score_numeric'], inplace=True)
-    if len(df) < original_rows:
-        logging.warning(f"Dropped {original_rows - len(df)} rows due to non-numeric 'score' values.")
-
-    if df.empty:
-        logging.error("No valid numeric data in 'score' column after cleaning.")
-        return
-        
-    # For pexams, the score is already the count of correct answers.
-    # We need to know the penalty for incorrect answers to adjust for voiding.
-    # Assuming a penalty of -1/3 for now, as it's a common case.
-    # This part is more complex than in rexams because we don't have per-question points.
-    # A simplification: for voided questions, we assume they give 1 point if correct.
-    # We don't have information about incorrect answers to add back penalties.
-    # This is a limitation of the current pexams CSV format.
-    # Let's proceed with a simplified voiding logic.
-    
-    logging.warning("Simplified 'void' logic is being used. It assumes each question is worth 1 point and does not handle negative marking for voiding.")
 
     void_q_list = parse_q_list(void_questions_str)
-    
-    # We can't implement 'void_nicely' without per-question results in the CSV.
-    if void_questions_nicely_str:
-        logging.warning("'void_nicely' is not supported with the current CSV format from pexams. Ignoring.")
+    void_q_nicely_list = parse_q_list(void_questions_nicely_str)
 
+    if void_q_list:
+        logging.info(f"Voiding questions (will be removed for all students): {void_q_list}")
+    if void_q_nicely_list:
+        logging.info(f"Voiding questions nicely (removed only if incorrect or not answered): {void_q_nicely_list}")
+
+    # --- Recalculate scores based on voiding rules ---
+    adjusted_scores = []
+    adjusted_max_scores = []
+
+    for _, row in df.iterrows():
+        model_id = str(row['model_id'])
+        if model_id not in solutions_per_model:
+            adjusted_scores.append(0)
+            adjusted_max_scores.append(max_score)
+            continue
+
+        model_solutions = solutions_per_model[model_id]
+        student_score = 0
+        student_max_score = 0
+        
+        q_ids = sorted(model_solutions.keys())
+
+        for q_id in q_ids:
+            # Question is completely voided for everyone
+            if q_id in void_q_list:
+                continue
+
+            answer_col = f'answer_{q_id}'
+            student_answer_char = row.get(answer_col)
+            
+            correct_answer_idx = model_solutions[q_id]['correct_answer_index']
+            if correct_answer_idx is None:
+                continue # Skip questions without a correct answer (e.g., surveys)
+
+            correct_answer_char = chr(ord('A') + correct_answer_idx)
+            is_correct = (student_answer_char == correct_answer_char)
+
+            # Question is voided nicely
+            if q_id in void_q_nicely_list:
+                if is_correct:
+                    student_score += 1
+                    student_max_score += 1
+                # If incorrect, it doesn't count towards student's score or max score
+            
+            # Regular question
+            else:
+                if is_correct:
+                    student_score += 1
+                student_max_score += 1
+        
+        adjusted_scores.append(student_score)
+        adjusted_max_scores.append(student_max_score)
+
+    df['score_adjusted'] = adjusted_scores
+    df['max_score_adjusted'] = adjusted_max_scores
+    
+    # --- Plot answer distribution before calculating final marks ---
     if solutions_per_model:
         _plot_answer_distribution(df, solutions_per_model, output_dir)
         
-    adjustments_made = bool(void_q_list)
-    
-    df['score_adjusted'] = df['score_numeric'].copy()
-    max_score_adjusted = float(max_score)
-
-    if adjustments_made:
-        logging.info(f"Voiding questions: {void_q_list}. Max score will be reduced.")
-        # We can't adjust student scores without knowing which they got right.
-        # The best we can do is adjust the max score.
-        max_score_adjusted -= len(void_q_list)
-        logging.info(f"Adjusted max score is now: {max_score_adjusted}")
-
-    df['mark'] = (df['score_adjusted'] / max_score_adjusted) * 10 if max_score_adjusted > 0 else 0
+    df['mark'] = (df['score_adjusted'] / df['max_score_adjusted'].replace(0, 1)) * 10
     df['mark_clipped'] = np.clip(df['mark'], 0, 10)
 
     print("\n--- Descriptive Statistics for Marks (0-10 scale) ---")
@@ -215,7 +297,7 @@ def analyze_results(csv_filepath, max_score, output_dir=".", void_questions_str:
 
     plt.bar(all_possible_scores, frequencies, width=1.0, edgecolor='black', align='center', color='skyblue')
 
-    ax.set_title(f'Distribution of Exam Marks (Scaled to 0-10 from Max Raw: {max_score_adjusted})', fontsize=15)
+    ax.set_title(f'Distribution of Exam Marks (Scaled to 0-10)', fontsize=15)
     ax.set_xlabel('Mark (0-10 Scale)', fontsize=12)
     ax.set_ylabel('Number of Students', fontsize=12)
     ax.set_xticks(np.arange(0, 11, 1))
