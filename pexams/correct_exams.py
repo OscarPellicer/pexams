@@ -21,6 +21,8 @@ except ImportError as e:
     OPENCV_AVAILABLE = False
 
 from pexams import layout
+from pexams.schemas import PexamExam, PexamQuestion, PexamOption
+from pathlib import Path
 
 # Define the standard resolution for the entire correction process for consistency.
 PX_PER_MM = 10.0
@@ -301,7 +303,7 @@ def _ocr_student_name(warped_image, layout_data, px_per_mm, processor, model, de
 
     return student_name
 
-def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float):
+def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float, questions: List[PexamQuestion]):
     """Analyzes the warped sheet to find marked answers and scores them."""
     gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
@@ -309,8 +311,8 @@ def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float
     detected_answers = {}
     score = 0
 
-    num_questions = len(solutions)
-    layout_data = layout.get_answer_sheet_layout(num_questions)
+    layout_data = layout.get_answer_sheet_layout(questions)
+    num_questions = len(questions)
 
     for q_num in range(1, num_questions + 1):
         if q_num not in layout_data.answer_boxes: continue
@@ -344,7 +346,7 @@ def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float
             
     return {"score": score, "total_questions": len(solutions), "answers": detected_answers}
 
-def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]], output_dir: str) -> bool:
+def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]], output_dir: str, questions_dir: str) -> bool:
     if not OPENCV_AVAILABLE:
         logging.critical("Required libraries (OpenCV, etc.) are not installed.")
         return False
@@ -407,6 +409,9 @@ def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]
     first_model_key = next(iter(solutions_per_model))
     num_questions_for_header = len(solutions_per_model[first_model_key])
 
+    dummy_options = [PexamOption(text=f'{i}', is_correct=(i==0)) for i in range(5)]
+    dummy_question = PexamQuestion(id=1, text='d', options=dummy_options)
+
     for i, frame in enumerate(images_to_process):
         page_number = i + 1
         logging.info(f"Processing page {page_number}...")
@@ -419,7 +424,7 @@ def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]
         warped_sheet = _apply_perspective_transform(frame, marker_corners, PX_PER_MM)
         
         # We need a layout object to find the model ID box. The number of questions doesn't affect its position.
-        layout_for_model_ocr = layout.get_answer_sheet_layout(num_questions=1)
+        layout_for_model_ocr = layout.get_answer_sheet_layout(questions=[dummy_question])
         model_id = _ocr_model_id(warped_sheet, layout_for_model_ocr, PX_PER_MM, processor, model, device, debug_dir, page_number)
 
         if not model_id or model_id not in solutions_per_model:
@@ -428,8 +433,20 @@ def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]
         
         logging.info(f"Page {page_number}: Detected Model ID '{model_id}'.")
         solutions = solutions_per_model[model_id]
+
+        questions_path = Path(questions_dir) / f"exam_model_{model_id}_questions.json"
+        if not questions_path.exists():
+            logging.warning(f"Questions file not found for model {model_id} at {questions_path}. Skipping page.")
+            continue
         
-        layout_data_for_page = layout.get_answer_sheet_layout(len(solutions))
+        try:
+            exam_model = PexamExam.model_validate_json(questions_path.read_text(encoding="utf-8"))
+            questions = exam_model.questions
+        except Exception as e:
+            logging.error(f"Failed to parse questions file for model {model_id}: {e}. Skipping page.")
+            continue
+        
+        layout_data_for_page = layout.get_answer_sheet_layout(questions)
         student_id = _ocr_student_id(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
         student_name = _ocr_student_name(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
 
@@ -437,7 +454,7 @@ def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]
             student_id = f"unknown_{uuid.uuid4().hex[:6]}"
             logging.warning(f"Could not reliably OCR student ID for page {page_number}. Using random ID: {student_id}")
 
-        page_result = _analyze_and_score(warped_sheet, solutions, PX_PER_MM)
+        page_result = _analyze_and_score(warped_sheet, solutions, PX_PER_MM, questions)
         page_result["page"] = page_number
         page_result["student_id"] = student_id
         page_result["student_name"] = student_name

@@ -27,7 +27,7 @@ def _generate_answer_sheet_html(
 
     selected_lang = LANG_STRINGS.get(lang, LANG_STRINGS["en"])
     
-    layout_data = layout.get_answer_sheet_layout(len(questions), id_length)
+    layout_data = layout.get_answer_sheet_layout(questions, id_length)
     html_elements = []
 
     # --- Header Elements ---
@@ -469,7 +469,7 @@ def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuesti
     from pexams.correct_exams import _apply_perspective_transform
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
-    layout_data = layout.get_answer_sheet_layout(len(questions), id_length)
+    layout_data = layout.get_answer_sheet_layout(questions, id_length)
     
     for q in questions:
         q_id = q.id
@@ -526,7 +526,7 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
     # --- Draw Fake Data onto the warped sheet ---
-    layout_data = layout.get_answer_sheet_layout(len(questions), id_length)
+    layout_data = layout.get_answer_sheet_layout(questions, id_length)
     
     # Fake Name
     name_box = layout_data.student_name_box

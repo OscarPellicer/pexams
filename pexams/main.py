@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import glob
 import re
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from pexams import correct_exams
 from pexams import generate_exams
@@ -217,7 +217,8 @@ def main():
         correction_success = correct_exams.correct_exams(
             input_path=simulated_scans_path,
             solutions_per_model=solutions_per_model_for_correction,
-            output_dir=correction_output_dir
+            output_dir=correction_output_dir,
+            questions_dir=exam_output_dir
         )
         
         if correction_success:
@@ -278,7 +279,8 @@ def main():
         correction_success = correct_exams.correct_exams(
             input_path=args.input_path,
             solutions_per_model=solutions_per_model_for_correction,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            questions_dir=args.exam_dir
         )
         
         if correction_success:
