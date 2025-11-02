@@ -302,3 +302,5 @@ Pull requests are welcome! Please feel free to submit an issue or pull request.
 - Test that the correction resulst are actually correct when running the test command.
 - Improve OCR speed by either concatenating the ID images into a single image, or batching them.
 - Allow to pass a list of student IDs to the correction command, so that wrongly OCRd IDs can be matched to the correct student ID by using Levenshtein distance.
+- Create a set of layouts allowing for more answers per question, or overall more questions (more compact), etc.
+- Allow to add extra content to the questions sheets either before or after them, such as images, code, a table, etc.
