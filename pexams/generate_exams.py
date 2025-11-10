@@ -175,7 +175,14 @@ def _generate_questions_markdown(
             src_path = Path(q.image_source)
             if src_path.exists():
                 src = src_path.as_uri()
-                md_parts.append(f'<img src="{src}" alt="Image for question {q.id}">\n')
+                style_parts = []
+                if q.max_image_width:
+                    style_parts.append(f"max-width: {q.max_image_width};")
+                if q.max_image_height:
+                    style_parts.append(f"max-height: {q.max_image_height};")
+                
+                style_attr = f'style="{" ".join(style_parts)}"' if style_parts else ""
+                md_parts.append(f'<img src="{src}" alt="Image for question {q.id}" {style_attr}>\n')
 
         md_parts.append('<div class="options-block">')
         for i, option in enumerate(q.options):

@@ -48,6 +48,8 @@
             "id": 3,
             "text": "What animal is shown in the image below?",
             "image_source": "pexams/assets/test_image.jpg",
+            "max_image_width": "80mm",
+            "max_image_height": "80mm",
             "options": [
                 {
                     "text": "A cat",
