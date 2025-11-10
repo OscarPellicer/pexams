@@ -347,11 +347,14 @@ def generate_exams(
                 browser = p.chromium.launch()
                 page = browser.new_page()
                 # Use file:// protocol to load the local HTML file
-                page.goto(f"file:///{os.path.abspath(html_filepath)}")
+                page.goto(f"file:///{os.path.abspath(html_filepath)}", wait_until="networkidle")
                 
                 # Wait for MathJax to finish rendering.
                 # typesetPromise() will not resolve until all math is rendered.
                 page.evaluate("MathJax.typesetPromise()")
+
+                # A definitive wait to ensure all rendering is complete.
+                page.wait_for_timeout(1000)
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
 
