@@ -15,6 +15,8 @@ class PexamQuestion(BaseModel):
     text: str
     options: List[PexamOption]
     image_source: Optional[str] = Field(None, description="Source for an image, can be a local path, a URL, or a base64 encoded string.")
+    max_image_width: Optional[str] = Field(None, description="Maximum width for the image (e.g., '100px', '50%').")
+    max_image_height: Optional[str] = Field(None, description="Maximum height for the image (e.g., '100px', '50%').")
     
     @validator('options')
     def check_one_correct_answer(cls, v):
