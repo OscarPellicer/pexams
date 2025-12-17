@@ -371,8 +371,8 @@ def analyze_results(
     # --- Print Student Marks ---
     print("\n--- Student Marks (0-10 Scale) ---")
     
-    results_to_print_df = df[['student_id', 'student_name', 'mark_clipped']].copy()
-    results_to_print_df.rename(columns={'mark_clipped': 'mark'}, inplace=True)
+    results_to_print_df = df[['student_id', 'student_name', 'score_adjusted', 'max_score_adjusted', 'mark_clipped']].copy()
+    results_to_print_df.rename(columns={'mark_clipped': 'mark', 'score_adjusted': 'score', 'max_score_adjusted': 'max_score'}, inplace=True)
     
     # Save to a new CSV
     final_csv_path = os.path.join(output_dir, "final_marks.csv")
