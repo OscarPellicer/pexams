@@ -9,6 +9,7 @@ from faker import Faker
 import cv2
 import numpy as np
 from copy import deepcopy
+from pypdf import PdfWriter, PdfReader
 
 from pexams.schemas import PexamQuestion, PexamExam
 from pexams import layout
@@ -20,14 +21,13 @@ def _generate_answer_sheet_html(
     exam_title: str,
     exam_course: Optional[str],
     exam_date: Optional[str],
-    lang: str = "en",
-    id_length: int = 10
+    lang: str = "en"
 ) -> str:
     """Generates the pure HTML for the answer sheet with absolutely positioned elements."""
 
     selected_lang = LANG_STRINGS.get(lang, LANG_STRINGS["en"])
     
-    layout_data = layout.get_answer_sheet_layout(questions, id_length)
+    layout_data = layout.get_answer_sheet_layout(questions)
     html_elements = []
 
     # --- Header Elements ---
@@ -66,12 +66,13 @@ def _generate_answer_sheet_html(
     style_id_label = f"position: absolute; left: {layout_data.student_id_label[0]}mm; top: {layout_data.student_id_label[1]}mm;"
     html_elements.append(f'<div class="student-id-label" style="{style_id_label}"><b>{selected_lang["id"]}</b></div>')
     
-    for id_box_coords in layout_data.student_id_boxes:
-        x, y = id_box_coords.top_left
-        w = id_box_coords.bottom_right[0] - x
-        h = id_box_coords.bottom_right[1] - y
-        style = f"position: absolute; left: {x}mm; top: {y}mm; width: {w}mm; height: {h}mm;"
-        html_elements.append(f'<div class="id-box" style="{style}"></div>')
+    # Single ID box
+    id_box_coords = layout_data.student_id_box
+    x, y = id_box_coords.top_left
+    w = id_box_coords.bottom_right[0] - x
+    h = id_box_coords.bottom_right[1] - y
+    style = f"position: absolute; left: {x}mm; top: {y}mm; width: {w}mm; height: {h}mm;"
+    html_elements.append(f'<div class="id-box" style="{style}"></div>')
 
     # --- Signature ---
     style_sig_label = f"position: absolute; left: {layout_data.student_signature_label[0]}mm; top: {layout_data.student_signature_label[1]}mm;"
@@ -92,7 +93,6 @@ def _generate_answer_sheet_html(
     <div class="instructions-box">
         <h4>{selected_lang.get('instructions_title', 'Instructions')}</h4>
         <ul>
-            <li>{selected_lang.get('instructions_id', '')}</li>
             <li>{selected_lang.get('instructions_answers', '')}</li>
             <li class="instruction-example-container">
                 <div class="instruction-example">
@@ -200,6 +200,45 @@ def _generate_questions_markdown(
     return "\n".join(md_parts)
 
 
+
+def _create_mass_exam_pdf(model_pdfs: List[str], total_students: int, output_dir: str, extra_model_templates: int = 0):
+    writer = PdfWriter()
+    num_models = len(model_pdfs)
+    
+    logging.info(f"Generating single PDF for {total_students} students...")
+    
+    model_readers = []
+    for pdf_path in model_pdfs:
+        model_readers.append(PdfReader(pdf_path))
+        
+    for i in range(total_students):
+        model_idx = i % num_models
+        reader = model_readers[model_idx]
+        
+        # Add all pages from the model
+        for page in reader.pages:
+            writer.add_page(page)
+            
+        # If odd number of pages, add a blank page for double-sided printing
+        if len(reader.pages) % 2 != 0:
+             writer.add_blank_page()
+             
+    if extra_model_templates > 0:
+        logging.info(f"Appending {extra_model_templates} extra template sheets per model...")
+        for i, pdf_path in enumerate(model_pdfs):
+            reader = model_readers[i]
+            # Assumes the answer sheet is the first page
+            first_page = reader.pages[0]
+            
+            for _ in range(extra_model_templates):
+                writer.add_page(first_page)
+                # Add blank page to ensure each template is on a separate sheet if printed duplex
+                writer.add_blank_page()
+
+    output_path = os.path.join(output_dir, "all_exams.pdf")
+    writer.write(output_path)
+    logging.info(f"Saved mass exam PDF to {output_path}")
+
 def generate_exams(
     questions: Union[List[PexamQuestion], str], 
     output_dir: str, 
@@ -208,12 +247,13 @@ def generate_exams(
     exam_course: Optional[str] = None,
     exam_date: Optional[str] = None,
     columns: int = 1,
-    id_length: int = 10,
     lang: str = "en",
     keep_html: bool = False,
     font_size: str = "11pt",
     generate_fakes: int = 0,
-    generate_references: bool = False
+    generate_references: bool = False,
+    total_students: int = 0,
+    extra_model_templates: int = 0
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
@@ -269,6 +309,8 @@ def generate_exams(
     for q_idx, q in enumerate(questions_shuffled, 1):
         q.id = q_idx
 
+    generated_pdfs = []
+
     for i in range(1, num_models + 1):
         # Deepcopy to avoid modifying the base shuffled list
         model_questions = deepcopy(questions_shuffled)
@@ -290,7 +332,7 @@ def generate_exams(
                 except ValueError:
                     logging.error(f"Could not find the original correct answer for question {q.id} after shuffling. This should not happen.")
                     # Handle error case if necessary, though it's unlikely.
-
+                    
         # Save the questions for this model to a JSON file
         model_exam = PexamExam(questions=model_questions)
         questions_json_path = os.path.join(output_dir, f"exam_model_{i}_questions.json")
@@ -304,8 +346,7 @@ def generate_exams(
             exam_title=exam_title,
             exam_course=exam_course,
             exam_date=exam_date,
-            lang=lang, 
-            id_length=id_length
+            lang=lang
         )
         questions_md = _generate_questions_markdown(model_questions)
         questions_html = markdown.markdown(questions_md)
@@ -369,10 +410,11 @@ def generate_exams(
                 )
                 browser.close()
             logging.info(f"Successfully generated PDF for model {i}: {pdf_filepath}")
+            generated_pdfs.append(pdf_filepath)
 
             if generate_references:
                 logging.info(f"Generating reference scan for model {i}")
-                _generate_reference_scan(pdf_filepath, model_questions, output_dir, i, id_length)
+                _generate_reference_scan(pdf_filepath, model_questions, output_dir, i)
 
             if generate_fakes > 0 and fakes_per_model:
                 if i <= len(fakes_per_model):
@@ -380,7 +422,7 @@ def generate_exams(
                     if num_fakes_for_this_model > 0:
                         logging.info(f"Test mode enabled: Generating {num_fakes_for_this_model} simulated scan(s) for model {i}")
                         for fake_idx in range(1, num_fakes_for_this_model + 1):
-                            _generate_simulated_scan(pdf_filepath, model_questions, output_dir, f"{i}_{fake_idx}", id_length)
+                            _generate_simulated_scan(pdf_filepath, model_questions, output_dir, f"{i}_{fake_idx}")
                 else:
                     logging.warning(f"Skipping fake generation for model {i} due to index out of range. This can happen if num_models is inconsistent.")
 
@@ -395,6 +437,9 @@ def generate_exams(
             if not keep_html and os.path.exists(html_filepath):
                 os.remove(html_filepath)
                 logging.info(f"Removed temporary HTML file: {html_filepath}")
+
+    if total_students > 0 and generated_pdfs:
+        _create_mass_exam_pdf(generated_pdfs, total_students, output_dir, extra_model_templates)
 
 def _find_fiducial_markers_for_sim(image):
     # This is a simplified copy from correct_exams.py for test generation
@@ -447,7 +492,7 @@ def _find_fiducial_markers_for_sim(image):
     return np.array([tl, tr, br, bl], dtype="float32")
 
 
-def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: int, id_length: int):
+def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: int):
     """
     Takes the first page of a PDF, converts it to an image, and adds the correct answers
     to generate a reference scan.
@@ -479,7 +524,7 @@ def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuesti
     from pexams.correct_exams import _apply_perspective_transform
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
-    layout_data = layout.get_answer_sheet_layout(questions, id_length)
+    layout_data = layout.get_answer_sheet_layout(questions)
     
     for q in questions:
         q_id = q.id
@@ -498,7 +543,7 @@ def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuesti
     logging.info(f"Saved reference scan to {output_path}")
 
 
-def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: Union[int, str], id_length: int):
+def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: Union[int, str]):
     """
     Takes the first page of a PDF, converts it to an image, finds the fiducial markers,
     applies a perspective transform to get a perfect top-down view, and then adds
@@ -536,7 +581,7 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
     # --- Draw Fake Data onto the warped sheet ---
-    layout_data = layout.get_answer_sheet_layout(questions, id_length)
+    layout_data = layout.get_answer_sheet_layout(questions)
     
     # Fake Name
     name_box = layout_data.student_name_box
@@ -544,16 +589,16 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
     cv2.putText(warped_sheet, fake.name(), name_pos, cv2.FONT_HERSHEY_SIMPLEX, 2, (20, 20, 20), 4)
 
     # Fake ID
-    fake_id = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=len(layout_data.student_id_boxes)))
-    for i, box in enumerate(layout_data.student_id_boxes):
-        text = fake_id[i]
-        font_scale = 1.8
-        font_thickness = 4
-        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-        center_x_px = int(box.center[0] * PX_PER_MM)
-        center_y_px = int(box.center[1] * PX_PER_MM)
-        id_pos = (center_x_px - text_width // 2, center_y_px + text_height // 2)
-        cv2.putText(warped_sheet, text, id_pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (20, 20, 20), font_thickness)
+    fake_id = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=8))
+    id_box = layout_data.student_id_box
+    
+    font_scale = 1.8
+    font_thickness = 4
+    (text_width, text_height), _ = cv2.getTextSize(fake_id, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+    center_x_px = int(id_box.center[0] * PX_PER_MM)
+    center_y_px = int(id_box.center[1] * PX_PER_MM)
+    id_pos = (center_x_px - text_width // 2, center_y_px + text_height // 2)
+    cv2.putText(warped_sheet, fake_id, id_pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (20, 20, 20), font_thickness)
 
     # Fake Signature (scribble)
     sig_box = layout_data.student_signature_box

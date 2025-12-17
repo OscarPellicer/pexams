@@ -179,49 +179,43 @@ def _apply_perspective_transform(image, corners, px_per_mm: float):
     return warped
 
 def _ocr_student_id(warped_image, layout_data, px_per_mm, processor, model, device, debug_dir=None, page_number=None) -> str:
-    """Performs OCR on the student ID boxes using transformers TrOCR."""
+    """Performs OCR on the student ID box using transformers TrOCR."""
     gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
     
+    box = layout_data.student_id_box
+    tl_x, tl_y = box.top_left
+    br_x, br_y = box.bottom_right
+    
+    x_px, y_px = int(tl_x * px_per_mm), int(tl_y * px_per_mm)
+    x2_px, y2_px = int(br_x * px_per_mm), int(br_y * px_per_mm)
+
+    # Add a padding to avoid box borders
+    padding = 5 
+    roi = gray[y_px+padding:y2_px-padding, x_px+padding:x2_px-padding]
+    
+    if roi.size == 0: return ""
+
+    # Save the exact ROI being sent to the OCR for debugging
+    if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
+        cv2.imwrite(os.path.join(debug_dir, f"page_{page_number}_ocr_id.png"), roi)
+
+    # Convert to PIL Image for the transformer model
+    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_GRAY2RGB)
+    img_pil = Image.fromarray(roi_rgb)
+    
     student_id = ""
-    for i, box in enumerate(layout_data.student_id_boxes):
-        tl_x, tl_y = box.top_left
-        br_x, br_y = box.bottom_right
-        
-        x_px, y_px = int(tl_x * px_per_mm), int(tl_y * px_per_mm)
-        x2_px, y2_px = int(br_x * px_per_mm), int(br_y * px_per_mm)
+    try:
+        pixel_values = processor(img_pil, return_tensors="pt").pixel_values.to(device)
+        generated_ids = model.generate(pixel_values, max_length=20)
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-        # Add a more aggressive padding to avoid box borders
-        padding = 5 
-        roi = gray[y_px+padding:y2_px-padding, x_px+padding:x2_px-padding]
-        
-        if roi.size == 0: continue
+        # Clean up: keep digits and uppercase
+        student_id = re.sub(r"[^0-9A-Z]", "", text.upper())
+        logging.debug(f"OCR for student ID: Detected '{student_id}' from '{text}'.")
 
-        # Save the exact ROI being sent to the OCR for debugging
-        if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
-            cv2.imwrite(os.path.join(debug_dir, f"page_{page_number}_ocr_digit_{i}.png"), roi)
+    except Exception as e:
+        logging.error(f"Error during OCR for student ID: {e}")
 
-        # Convert to PIL Image for the transformer model
-        roi_rgb = cv2.cvtColor(roi, cv2.COLOR_GRAY2RGB)
-        img_pil = Image.fromarray(roi_rgb)
-        
-        char = "?"
-        try:
-            pixel_values = processor(img_pil, return_tensors="pt").pixel_values.to(device)
-            generated_ids = model.generate(pixel_values, max_length=4)
-            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-
-            # Keep only one allowed character (digits+uppercase)
-            m = re.search(r"[0-9A-Z]", text.upper())
-            if m:
-                char = m.group(0)
-                logging.debug(f"OCR for character {i}: Detected '{char}' from '{text}'.")
-            else:
-                logging.warning(f"OCR for character {i}: No valid character detected from '{text}'.")
-        except Exception as e:
-            logging.error(f"Error during OCR for character {i}: {e}")
-
-        student_id += char
-        
     return student_id
 
 def _ocr_model_id(warped_image, layout_data, px_per_mm, processor, model, device, debug_dir=None, page_number=None) -> str:
@@ -506,22 +500,22 @@ def correct_exams(input_path: str, solutions_per_model: Dict[str, Dict[int, int]
         br_x, br_y = int(sig_coords.bottom_right[0] * PX_PER_MM), int(sig_coords.bottom_right[1] * PX_PER_MM)
         cv2.rectangle(annotated_image, (tl_x, tl_y), (br_x, br_y), blue_color, thickness)
 
-        # ID Boxes and OCR'd text
+        # ID Box and OCR'd text
         ocr_id = page_result["student_id"]
-        for i, box in enumerate(layout_data.student_id_boxes):
-            tl_x, tl_y = int(box.top_left[0] * PX_PER_MM), int(box.top_left[1] * PX_PER_MM)
-            br_x, br_y = int(box.bottom_right[0] * PX_PER_MM), int(box.bottom_right[1] * PX_PER_MM)
-            cv2.rectangle(annotated_image, (tl_x, tl_y), (br_x, br_y), blue_color, thickness)
-            
-            if i < len(ocr_id):
-                char = ocr_id[i]
-                font_scale = 1.5
-                font_thickness = 3
-                (text_w, text_h), _ = cv2.getTextSize(char, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-                # Position the text centered horizontally and below the box
-                text_x = tl_x + (br_x - tl_x - text_w) // 2
-                text_y = br_y + text_h + 5 # 5 pixels padding below
-                cv2.putText(annotated_image, char, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, blue_color, font_thickness)
+        id_box = layout_data.student_id_box
+        
+        tl_x, tl_y = int(id_box.top_left[0] * PX_PER_MM), int(id_box.top_left[1] * PX_PER_MM)
+        br_x, br_y = int(id_box.bottom_right[0] * PX_PER_MM), int(id_box.bottom_right[1] * PX_PER_MM)
+        cv2.rectangle(annotated_image, (tl_x, tl_y), (br_x, br_y), blue_color, thickness)
+        
+        if ocr_id:
+            font_scale = 1.5
+            font_thickness = 3
+            (text_w, text_h), _ = cv2.getTextSize(ocr_id, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+            # Position the text centered horizontally and below the box
+            text_x = tl_x + (br_x - tl_x - text_w) // 2
+            text_y = br_y + text_h + 5 # 5 pixels padding below
+            cv2.putText(annotated_image, ocr_id, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, blue_color, font_thickness)
                 
         # --- Draw Answer Annotations (Green/Red) ---
         for q_num, correct_idx in solutions.items():

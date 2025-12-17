@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel, Field, validator, computed_field
 
 class PexamOption(BaseModel):
@@ -11,12 +11,13 @@ class PexamQuestion(BaseModel):
     Data model for a single exam question.
     This schema is portable and can be used as the base for other systems.
     """
-    id: int
+    id: Union[int, str]
     text: str
     options: List[PexamOption]
     image_source: Optional[str] = Field(None, description="Source for an image, can be a local path, a URL, or a base64 encoded string.")
     max_image_width: Optional[str] = Field(None, description="Maximum width for the image (e.g., '100px', '50%').")
     max_image_height: Optional[str] = Field(None, description="Maximum height for the image (e.g., '100px', '50%').")
+    explanation: Optional[str] = Field(None, description="Explanation for the correct answer.")
     
     @validator('options')
     def check_one_correct_answer(cls, v):

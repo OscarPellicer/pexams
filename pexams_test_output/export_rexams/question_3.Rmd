@@ -1,0 +1,25 @@
+Question
+========
+What animal is shown in the image?
+
+```{r} include_graphics('c:/Users/Oscar/pexams/pexams/assets/test_image.jpg')
+```
+
+Questionlist
+------------
+* A bird
+* A dog
+* A cat
+* A fish
+
+Solution
+========
+The correct answer is: A bird
+
+
+Meta-information
+================
+exname: Question 3
+extype: mchoice
+exsolution: 1000
+exshuffle: TRUE

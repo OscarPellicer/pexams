@@ -16,7 +16,7 @@ class AnswerSheetLayout(NamedTuple):
     student_name_label: Tuple[float, float]
     student_name_box: BoxCoordinates
     student_id_label: Tuple[float, float]
-    student_id_boxes: List[BoxCoordinates]
+    student_id_box: BoxCoordinates
     student_signature_label: Tuple[float, float]
     student_signature_box: BoxCoordinates
     instructions: Tuple[float, float]
@@ -40,8 +40,8 @@ MODEL_ID_BOX_HEIGHT = 6.0
 STUDENT_ID_LABEL_POS = (5, 40)
 STUDENT_ID_BOX_START = (5, 47)
 
-ID_BOX_WIDTH = 4.5
-ID_BOX_HEIGHT = 6.0
+ID_BOX_WIDTH = 52
+ID_BOX_HEIGHT = 9
 ID_BOX_SPACING = 1.5
 
 STUDENT_NAME_LABEL_POS = (5, 60)
@@ -82,7 +82,7 @@ BUBBLE_STEP_X = OPTION_BOX_WIDTH + OPTION_BOX_HORIZONTAL_SPACING
 BUBBLE_STEP_Y = ANSWER_ROW_HEIGHT + ANSWER_ROW_VERTICAL_SPACING
 
 
-def get_answer_sheet_layout(questions: List[PexamQuestion], id_length: int = 10) -> AnswerSheetLayout:
+def get_answer_sheet_layout(questions: List[PexamQuestion]) -> AnswerSheetLayout:
     """Calculates the absolute mm coordinates for every element on the answer sheet."""
     
     num_questions = len(questions)
@@ -106,15 +106,11 @@ def get_answer_sheet_layout(questions: List[PexamQuestion], id_length: int = 10)
         center=(STUDENT_NAME_BOX_TL[0] + STUDENT_NAME_BOX_WIDTH / 2, STUDENT_NAME_BOX_TL[1] + STUDENT_NAME_BOX_HEIGHT / 2)
     )
     
-    student_id_boxes = []
-    for i in range(id_length):
-        tl_x = STUDENT_ID_BOX_START[0] + i * (ID_BOX_WIDTH + ID_BOX_SPACING)
-        tl_y = STUDENT_ID_BOX_START[1]
-        student_id_boxes.append(BoxCoordinates(
-            top_left=(tl_x, tl_y),
-            bottom_right=(tl_x + ID_BOX_WIDTH, tl_y + ID_BOX_HEIGHT),
-            center=(tl_x + ID_BOX_WIDTH / 2, tl_y + ID_BOX_HEIGHT / 2)
-        ))
+    student_id_box = BoxCoordinates(
+        top_left=STUDENT_ID_BOX_START,
+        bottom_right=(STUDENT_ID_BOX_START[0] + ID_BOX_WIDTH, STUDENT_ID_BOX_START[1] + ID_BOX_HEIGHT),
+        center=(STUDENT_ID_BOX_START[0] + ID_BOX_WIDTH / 2, STUDENT_ID_BOX_START[1] + ID_BOX_HEIGHT / 2)
+    )
 
     student_signature_box = BoxCoordinates(
         top_left=STUDENT_SIGNATURE_BOX_TL,
@@ -170,7 +166,7 @@ def get_answer_sheet_layout(questions: List[PexamQuestion], id_length: int = 10)
         student_name_label=STUDENT_NAME_LABEL_POS,
         student_name_box=student_name_box,
         student_id_label=STUDENT_ID_LABEL_POS,
-        student_id_boxes=student_id_boxes,
+        student_id_box=student_id_box,
         student_signature_label=STUDENT_SIGNATURE_LABEL_POS,
         student_signature_box=student_signature_box,
         instructions=INSTRUCTIONS_POS,

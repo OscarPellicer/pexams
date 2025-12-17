@@ -1,0 +1,22 @@
+Question
+========
+What is the value of the following integral? $\int_0^\infty e^{-x^2} dx$
+
+Questionlist
+------------
+* $\frac{\sqrt{\pi}}{2}$
+* $\sqrt{\pi}$
+* $\frac{\pi}{2}$
+* $\pi$
+
+Solution
+========
+The correct answer is: $\frac{\sqrt{\pi}}{2}$
+
+
+Meta-information
+================
+exname: Question 2
+extype: mchoice
+exsolution: 1000
+exshuffle: TRUE

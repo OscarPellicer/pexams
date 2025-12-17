@@ -57,11 +57,11 @@
                 },
                 {
                     "text": "A dog",
-                    "is_correct": true
+                    "is_correct": false
                 },
                 {
                     "text": "A bird",
-                    "is_correct": false
+                    "is_correct": true
                 },
                 {
                     "text": "A fish",
