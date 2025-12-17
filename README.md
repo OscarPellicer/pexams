@@ -183,6 +183,7 @@ pexams correct --input-path <path> --exam-dir <path> --output-dir <path> [OPTION
 
 - `--void-questions <str>`: Comma-separated list of question numbers to exclude from scoring.
 - `--void-questions-nicely <str>`: Comma-separated list of question IDs to void "nicely".
+- `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. This is useful if you manually correct OCR errors in the CSV file and want to recalculate the final grades.
 
 #### `pexams test`
 
@@ -242,7 +243,8 @@ solutions_full, solutions_simple, max_score = utils.load_solutions(exam_dir)
 correct_exams.correct_exams(
     input_path="./my_exams/simulated_scans", # Path to PDF or folder of images
     solutions_per_model=solutions_simple,
-    output_dir="./correction_output"
+    output_dir="./correction_output",
+    questions_dir=exam_dir
 )
 ```
 

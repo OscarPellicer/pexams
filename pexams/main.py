@@ -204,7 +204,7 @@ def main():
     correct_parser.add_argument(
         "--input-path",
         type=str,
-        required=True,
+        required=False,
         help="Path to the single PDF file or a folder containing scanned answer sheets as PNG/JPG images."
     )
     correct_parser.add_argument(
@@ -258,6 +258,11 @@ def main():
         type=int,
         default=100,
         help="Fuzzy matching threshold (0-100) for student IDs."
+    )
+    correct_parser.add_argument(
+        "--only-analysis",
+        action="store_true",
+        help="Skip image processing and run analysis on existing correction_results.csv."
     )
 
     # --- Test Command ---
@@ -435,12 +440,85 @@ def main():
                 else:
                     logging.warning("No valid student IDs found to test fuzzy matching.")
 
+                # --- 7. Test Rerun Analysis (Manual Correction) ---
+                logging.info("--- Testing Rerun Analysis (Manual CSV Modification) ---")
+                
+                # Load the score from the previous run (from final_marks.csv)
+                final_marks_path = os.path.join(correction_output_dir, "final_marks.csv")
+                if os.path.exists(final_marks_path) and valid_ids:
+                    target_id = valid_ids[0]
+                    df_marks_old = pd.read_csv(final_marks_path)
+                    # We need to find the row for target_id
+                    row_old = df_marks_old[df_marks_old['student_id'].astype(str) == str(target_id)]
+                    if not row_old.empty:
+                        old_score = row_old.iloc[0]['score']
+                        
+                        # Now modify correction_results.csv
+                        df = pd.read_csv(results_csv) # reload to be fresh
+                        row_idx = df.index[df['student_id'].astype(str) == str(target_id)].tolist()[0]
+                        model_id = str(df.at[row_idx, 'model_id'])
+                        
+                        # Use Question 3 (since Q1 is voided in the test)
+                        target_q = 3
+                        if model_id in solutions_simple and target_q in solutions_simple[model_id]:
+                            q_sol_idx = solutions_simple[model_id][target_q]
+                            q_correct_char = chr(ord('A') + q_sol_idx)
+                            
+                            current_answer = str(df.at[row_idx, f'answer_{target_q}'])
+                            
+                            # Determine change
+                            if current_answer == q_correct_char:
+                                new_answer = 'B' if q_correct_char == 'A' else 'A' # Make it wrong
+                                expected_delta = -1
+                                logging.info(f"Student {target_id}: Changing Q{target_q} from {current_answer} (Correct) to {new_answer} (Wrong).")
+                            else:
+                                new_answer = q_correct_char # Make it correct
+                                expected_delta = 1
+                                logging.info(f"Student {target_id}: Changing Q{target_q} from {current_answer} (Wrong) to {new_answer} (Correct).")
+                                
+                            # Apply change
+                            df.at[row_idx, f'answer_{target_q}'] = new_answer
+                            df.to_csv(results_csv, index=False)
+                            
+                            # Run Analysis Again
+                            analysis.analyze_results(
+                                csv_filepath=results_csv,
+                                max_score=max_score,
+                                output_dir=correction_output_dir,
+                                solutions_per_model=solutions_full,
+                                void_questions_str="1",
+                                void_questions_nicely_str="2"
+                            )
+                            
+                            # Verify
+                            df_marks_new = pd.read_csv(final_marks_path)
+                            row_new = df_marks_new[df_marks_new['student_id'].astype(str) == str(target_id)]
+                            new_score = row_new.iloc[0]['score']
+                            
+                            logging.info(f"Old Score: {old_score}, New Score: {new_score}, Expected Delta: {expected_delta}")
+                            
+                            if new_score == old_score + expected_delta:
+                                logging.info("Manual correction verification SUCCESSFUL.")
+                            else:
+                                logging.warning(f"Manual correction verification FAILED. Expected {old_score + expected_delta}, got {new_score}")
+                        else:
+                            logging.warning(f"Model {model_id} or Question {target_q} not found in solutions.")
+                    else:
+                        logging.warning(f"Student {target_id} not found in final_marks.csv")
+                else:
+                    logging.warning("final_marks.csv not found or no valid IDs for manual correction test.")
+
         logging.info("--- Test command finished successfully! ---")
 
     elif args.command == "correct":
-        if not os.path.exists(args.input_path):
-            logging.error(f"Input path not found: {args.input_path}")
-            return
+        if not args.only_analysis:
+             if not args.input_path:
+                logging.error("the following arguments are required: --input-path (unless --only-analysis is used)")
+                return
+             if not os.path.exists(args.input_path):
+                logging.error(f"Input path not found: {args.input_path}")
+                return
+
         if not os.path.isdir(args.exam_dir):
             logging.error(f"Exam directory not found: {args.exam_dir}")
             return
@@ -451,12 +529,16 @@ def main():
 
         os.makedirs(args.output_dir, exist_ok=True)
         
-        correction_success = correct_exams.correct_exams(
-            input_path=args.input_path,
-            solutions_per_model=solutions_simple,
-            output_dir=args.output_dir,
-            questions_dir=args.exam_dir
-        )
+        if args.only_analysis:
+             logging.info("Skipping image correction (--only-analysis). Using existing results.")
+             correction_success = True
+        else:
+            correction_success = correct_exams.correct_exams(
+                input_path=args.input_path,
+                solutions_per_model=solutions_simple,
+                output_dir=args.output_dir,
+                questions_dir=args.exam_dir
+            )
         
         if correction_success:
             logging.info("Correction finished. Starting analysis.")
