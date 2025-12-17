@@ -2,7 +2,7 @@
 
 body {
     font-family: 'Open Sans', sans-serif;
-    font-size: 11pt;
+    font-size: 10pt;
     line-height: 1.5;
     color: #333;
     -webkit-print-color-adjust: exact; /* Ensures colors and backgrounds are printed */
@@ -144,10 +144,12 @@ h2 { font-size: 12pt; }
 }
 
 .header-q-num, .question-number {
-    font-size: 11pt;
+    font-size: 10pt;
     font-weight: bold;
     text-align: left;
     line-height: 1; /* Reset line height */
+    display: flex;
+    align-items: center;
 }
 
 .header-option {
@@ -197,12 +199,12 @@ h2 { font-size: 12pt; }
 
 .questions-container.two-columns {
     column-count: 2;
-    column-gap: 15mm;
+    column-gap: 5mm;
 }
 
 .questions-container.three-columns {
     column-count: 3;
-    column-gap: 10mm;
+    column-gap: 5mm;
 }
 
 .question-wrapper {
