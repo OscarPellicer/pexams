@@ -1,0 +1,4 @@
+Type,Title,Correct,Choice 1,Choice 2,Choice 3,Choice 4
+MCQ,"What is the output of the following Python code? $\texttt{x = [1, 2, 3]; y = x; y.append(4); print(x)}$",3,A $\texttt{SyntaxError}$ is raised.,"$\texttt{[1, 2, 3]}$","$\texttt{[1, 2, 3, 4]}$","$\texttt{[1, 2, 3, [4]]}$"
+MCQ,What is the value of the following integral? $\int_0^\infty e^{-x^2} dx$,4,$\frac{\pi}{2}$,$\pi$,$\sqrt{\pi}$,$\frac{\sqrt{\pi}}{2}$
+MCQ,Which of the following is NOT a primary color?,3,Red,Blue,Green,Yellow

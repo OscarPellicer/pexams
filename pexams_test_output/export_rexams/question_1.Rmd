@@ -1,0 +1,22 @@
+Question
+========
+What is the output of the following Python code? `x = [1, 2, 3]; y = x; y.append(4); print(x)`
+
+Questionlist
+------------
+* `[1, 2, 3, 4]`
+* `[1, 2, 3]`
+* `[1, 2, 3, [4]]`
+* A `SyntaxError` is raised.
+
+Solution
+========
+The correct answer is: `[1, 2, 3, 4]`
+
+
+Meta-information
+================
+exname: Question 1
+extype: mchoice
+exsolution: 1000
+exshuffle: TRUE

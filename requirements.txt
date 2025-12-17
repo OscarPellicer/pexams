@@ -1,23 +1,18 @@
-# Core
+opencv-python
 numpy
+pdf2image
 pydantic
 Markdown
 Faker
-
-# PDF/Image processing
-opencv-python
-pdf2image
 Pillow
-
-# Web/Playwright
 playwright
-
-# Analysis
 matplotlib
 pandas
-
-# ML/OCR
+tabulate
 torch
 torchvision
 transformers
 timm
+pymdown-extensions
+python-Levenshtein
+pypdf

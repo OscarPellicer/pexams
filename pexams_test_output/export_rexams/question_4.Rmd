@@ -1,0 +1,22 @@
+Question
+========
+Which of the following is NOT a primary color?
+
+Questionlist
+------------
+* Green
+* Red
+* Blue
+* Yellow
+
+Solution
+========
+The correct answer is: Green
+
+
+Meta-information
+================
+exname: Question 4
+extype: mchoice
+exsolution: 1000
+exshuffle: TRUE
