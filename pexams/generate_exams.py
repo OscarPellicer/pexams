@@ -249,7 +249,7 @@ def generate_exams(
     columns: int = 1,
     lang: str = "en",
     keep_html: bool = False,
-    font_size: str = "11pt",
+    font_size: str = "10pt",
     generate_fakes: int = 0,
     generate_references: bool = False,
     total_students: int = 0,
