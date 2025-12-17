@@ -96,4 +96,4 @@ def convert_to_gift(questions: List[PexamQuestion], output_file: str, max_image_
 
             f.write("}\n\n")
 
-    print(f"Successfully converted questions to GIFT: {output_file}")
+    logging.info(f"Successfully converted questions to GIFT: {output_file}")
