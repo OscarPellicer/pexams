@@ -152,3 +152,4 @@ cython_debug/
 # Exam files
 exam_output/
 correction_results/
+pexams_test_output/

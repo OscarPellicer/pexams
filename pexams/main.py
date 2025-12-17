@@ -19,7 +19,7 @@ from pexams import correct_exams
 from pexams import generate_exams
 from pexams import analysis
 from pexams import utils
-from pexams.io import md_converter, rexams_converter, wooclap_converter, gift_converter
+from pexams.io import md_converter, rexams_converter, wooclap_converter, gift_converter, moodle_xml_converter
 from pexams.schemas import PexamExam, PexamQuestion
 from pydantic import ValidationError
 import pexams
@@ -286,7 +286,7 @@ def main():
         "--to",
         type=str,
         default="pexams",
-        choices=["pexams", "rexams", "wooclap", "gift", "md"],
+        choices=["pexams", "rexams", "wooclap", "gift", "md", "moodle"],
         help="Output format. Default is 'pexams' (PDF generation)."
     )
     
@@ -338,13 +338,14 @@ def main():
 
         # --- 2. Test Exports ---
         logging.info("--- Testing Exports ---")
-        for fmt in ["rexams", "wooclap", "gift", "md"]:
+        for fmt in ["rexams", "wooclap", "gift", "md", "moodle"]:
             out_export = os.path.join(output_dir, f"export_{fmt}")
             os.makedirs(out_export, exist_ok=True)
             if fmt == "rexams": rexams_converter.prepare_for_rexams(questions, out_export)
             elif fmt == "wooclap": wooclap_converter.convert_to_wooclap(questions, os.path.join(out_export, "w.csv"))
             elif fmt == "gift": gift_converter.convert_to_gift(questions, os.path.join(out_export, "g.gift"))
             elif fmt == "md": md_converter.save_questions_to_md(questions, os.path.join(out_export, "q.md"))
+            elif fmt == "moodle": moodle_xml_converter.convert_to_moodle_xml(questions, os.path.join(out_export, "m.xml"))
             logging.info(f"Exported to {fmt}")
 
         # --- 3. Generate Exams & Fakes ---
@@ -526,8 +527,11 @@ def main():
         elif output_fmt == "md":
             md_file = os.path.join(out_dir, "questions.md")
             md_converter.save_questions_to_md(questions, md_file)
+        elif output_fmt == "moodle":
+            moodle_file = os.path.join(out_dir, "questions.xml")
+            moodle_xml_converter.convert_to_moodle_xml(questions, moodle_file)
         else:
-            logging.error(f"Unknown output format: {output_fmt}")
+            logging.error(f"Unknown output format: {output_fmt}. Supported formats: pexams, rexams, wooclap, gift, md, moodle.")
 
 if __name__ == "__main__":
     main()
