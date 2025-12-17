@@ -27,7 +27,7 @@ The analysis module also generates a plot showing the distribution of answers fo
 - **Multiple exam models**: Generate multiple unique exam models from a single source file, with automatic shuffling of questions and answers.
 - **Formats support**:
   - **Input**: Write questions in Markdown (preferred) or JSON.
-  - **Export**: Export questions to `rexams`, `wooclap`, `gift`, or `md` formats.
+  - **Export**: Export questions to `rexams`, `wooclap`, `gift`, `moodle` (xml), or `md` formats.
 - **Rich content support**: Write questions in Markdown and include:
   - **LaTeX equations**: Seamlessly render math formulas using MathJax (`$...$`).
   - **Images**: Embed images in your questions from local files.
@@ -89,9 +89,9 @@ This command only needs to be run once.
 
 ### 3. Install Poppler
 
-You may also need to install Poppler, which is needed for `pdf2image` to convert PDFs to images during correction, and also for generating simulated scans:
+You may also need to install Poppler, which is needed to convert PDFs to images during the correction phase and for generating simulated scans:
 
-- **Windows**: `conda install -c conda-forge poppler`
+- **Windows**: `conda install -c conda-forge poppler` (alternatively, you can download the Poppler binaries from [the Poppler Windows repository](https://github.com/oschwartz10612/poppler-windows/releases/tag/v25.12.0-0))
 - **macOS**: `brew install poppler`
 - **Debian/Ubuntu**: `sudo apt-get install poppler-utils`
 
@@ -141,7 +141,7 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 **Arguments:**
 
 - `input_file`: (Positional) Path to the input file (Markdown or JSON).
-- `--to <format>`: Output format. Options: `pexams` (default, PDF generation), `rexams`, `wooclap`, `gift`, `md`.
+- `--to <format>`: Output format. Options: `pexams` (default, PDF generation), `rexams`, `wooclap`, `gift`, `md`, or `moodle` (xml).
 - `--output-dir <path>`: Directory to save the output.
 
 **Common Options (for all formats):**
