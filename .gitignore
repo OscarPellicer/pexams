@@ -153,6 +153,7 @@ cython_debug/
 exam_output/
 correction_results/
 pexams_test_output/
+pexams_test_overflow/
 
 # Paper
 paper/
