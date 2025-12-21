@@ -31,7 +31,7 @@ def _generate_answer_sheet_html(
     html_elements = []
 
     # --- Header Elements ---
-    style_title = f"position: absolute; left: {layout_data.exam_title[0]}mm; top: {layout_data.exam_title[1]}mm;"
+    style_title = f"position: absolute; left: {layout_data.exam_title[0]}mm; top: {layout_data.exam_title[1]}mm; width: {layout_data.exam_title_width}mm;"
     html_elements.append(f'<h1 class="exam-title" style="{style_title}">{exam_title}</h1>')
 
     # --- Model ID Box ---
@@ -49,7 +49,7 @@ def _generate_answer_sheet_html(
     if exam_course: exam_info_parts.append(f"<span>{selected_lang['course']}: {exam_course}</span>")
     if exam_date: exam_info_parts.append(f"<span>{selected_lang['date']}: {exam_date}</span>")
     exam_info_html = "\n".join(exam_info_parts)
-    style_info = f"position: absolute; left: {layout_data.exam_info[0]}mm; top: {layout_data.exam_info[1]}mm;"
+    style_info = f"position: absolute; left: {layout_data.exam_info[0]}mm; top: {layout_data.exam_info[1]}mm; width: {layout_data.exam_info_width}mm;"
     html_elements.append(f'<div class="exam-info" style="{style_info}">{exam_info_html}</div>')
 
     # --- Student Info ---
@@ -253,7 +253,8 @@ def generate_exams(
     generate_fakes: int = 0,
     generate_references: bool = False,
     total_students: int = 0,
-    extra_model_templates: int = 0
+    extra_model_templates: int = 0,
+    custom_header: Optional[Union[str, Path]] = None
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
@@ -274,6 +275,11 @@ def generate_exams(
         questions_list = loaded_exam.questions
     else:
         questions_list = questions
+
+    # Check max questions
+    if len(questions_list) > layout.MAX_QUESTIONS:
+        logging.error(f"Too many questions ({len(questions_list)}). Max allowed is {layout.MAX_QUESTIONS}.")
+        raise ValueError(f"Too many questions ({len(questions_list)}). Max allowed is {layout.MAX_QUESTIONS}.")
 
     logging.info(f"Loaded {len(questions_list)} questions.")
     logging.info(f"Exams will be output to: {output_dir}")
@@ -301,6 +307,27 @@ def generate_exams(
 
     column_classes = {1: "", 2: "two-columns", 3: "three-columns"}
     column_class = column_classes.get(columns, "")
+
+    # Process custom header
+    custom_header_html = ""
+    if custom_header:
+        header_content = custom_header
+        if str(custom_header).strip().lower().endswith('.md') and os.path.exists(str(custom_header)):
+            logging.info(f"Loading custom header from file: {custom_header}")
+            with open(custom_header, 'r', encoding='utf-8') as f:
+                header_content = f.read()
+        
+        extensions = [
+            'pymdownx.arithmatex',
+            'pymdownx.inlinehilite',
+            'fenced_code',
+            'codehilite'
+        ]
+        extension_configs = {
+            'pymdownx.arithmatex': {'generic': True}
+        }
+        custom_header_html = markdown.markdown(str(header_content), extensions=extensions, extension_configs=extension_configs)
+        custom_header_html = f'<div class="custom-header">{custom_header_html}</div>'
 
     # --- Shuffle questions once to have a consistent order for all models ---
     questions_shuffled = list(questions_list)
@@ -371,6 +398,7 @@ def generate_exams(
     {answer_sheet_html}
     <div class="page-container" style="page-break-after: always;"></div>
     <div class="page-container questions-container {column_class}">
+        {custom_header_html}
         {questions_html}
     </div>
 </body>
@@ -398,6 +426,10 @@ def generate_exams(
                 page.wait_for_timeout(1000)
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
+                
+                # Ensure header text fits in one line with ellipsis for the PDF header
+                # Note: PDF header styling is limited, simple truncation is safest
+                header_style = 'font-family: Open Sans, sans-serif; font-size: 9px; color: #888; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 10px;'
 
                 page.pdf(
                     path=pdf_filepath,
@@ -405,7 +437,7 @@ def generate_exams(
                     print_background=True,
                     margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
                     display_header_footer=True,
-                    header_template=f'<div style="font-family: Open Sans, sans-serif; font-size: 9px; color: #888; width: 100%; text-align: center;">{header_text}</div>',
+                    header_template=f'<div style="{header_style}">{header_text}</div>',
                     footer_template=f'<div style="font-family: Open Sans, sans-serif; font-size: 9px; color: #888; width: 100%; text-align: center;">Model {i} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>'
                 )
                 browser.close()

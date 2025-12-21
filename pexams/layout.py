@@ -11,8 +11,10 @@ class BoxCoordinates(NamedTuple):
 class AnswerSheetLayout(NamedTuple):
     """Stores all calculated coordinates for an answer sheet."""
     exam_title: Tuple[float, float]
+    exam_title_width: float
     model_id_box: BoxCoordinates
     exam_info: Tuple[float, float]
+    exam_info_width: float
     student_name_label: Tuple[float, float]
     student_name_box: BoxCoordinates
     student_id_label: Tuple[float, float]
@@ -30,7 +32,11 @@ PRINTABLE_HEIGHT = 267
 
 # --- Header Element Positions (Top-left corner) ---
 EXAM_TITLE_POS = (5, 5)
+EXAM_TITLE_WIDTH = 170
+
 EXAM_INFO_POS = (5, 20)
+EXAM_INFO_WIDTH = 80
+
 MODEL_ID_LABEL_POS = (5, 32)
 MODEL_ID_BOX_TL = (5, 32)
 MODEL_ID_BOX_WIDTH = 4.5
@@ -65,6 +71,8 @@ QUESTIONS_PER_GROUP = 5
 # Spacing
 GROUP_VERTICAL_SPACING = 4
 COLUMN_HORIZONTAL_SPACING = 15
+
+MAX_QUESTIONS = NUM_COLUMNS * QUESTIONS_PER_COLUMN
 
 # --- Individual Box Dimensions and Spacing ---
 OPTION_BOX_WIDTH = 5.0
@@ -161,8 +169,10 @@ def get_answer_sheet_layout(questions: List[PexamQuestion]) -> AnswerSheetLayout
 
     return AnswerSheetLayout(
         exam_title=EXAM_TITLE_POS,
+        exam_title_width=EXAM_TITLE_WIDTH,
         model_id_box=model_id_box,
         exam_info=EXAM_INFO_POS,
+        exam_info_width=EXAM_INFO_WIDTH,
         student_name_label=STUDENT_NAME_LABEL_POS,
         student_name_box=student_name_box,
         student_id_label=STUDENT_ID_LABEL_POS,

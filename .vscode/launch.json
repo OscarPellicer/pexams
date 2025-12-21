@@ -67,6 +67,14 @@
             "module": "pexams.main",
             "args": ["test"],
             "justMyCode": true
+        },
+        {
+            "name": "Pexams: Test Overflow",
+            "type": "python",
+            "request": "launch",
+            "module": "pexams.main",
+            "args": ["test-overflow"],
+            "justMyCode": true
         }
     ]
 }
