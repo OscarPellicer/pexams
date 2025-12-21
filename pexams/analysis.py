@@ -215,7 +215,8 @@ def analyze_results(
     solutions_per_model: Optional[Dict] = None,
     max_score: Optional[int] = None,
     void_questions_str: Optional[str] = None, 
-    void_questions_nicely_str: Optional[str] = None
+    void_questions_nicely_str: Optional[str] = None,
+    penalty: float = 0.0
 ):
     """
     Analyzes exam results from a CSV file, scales scores to 0-10, 
@@ -296,6 +297,7 @@ def analyze_results(
 
             correct_answer_char = chr(ord('A') + correct_answer_idx)
             is_correct = (student_answer_char == correct_answer_char)
+            is_answered = (student_answer_char != 'NA' and isinstance(student_answer_char, str))
 
             # Question is voided nicely
             if q_id in void_q_nicely_list:
@@ -306,9 +308,11 @@ def analyze_results(
             
             # Regular question
             else:
+                student_max_score += 1
                 if is_correct:
                     student_score += 1
-                student_max_score += 1
+                elif is_answered and penalty > 0:
+                     student_score -= penalty
         
         adjusted_scores.append(student_score)
         adjusted_max_scores.append(student_max_score)
@@ -380,4 +384,5 @@ def analyze_results(
     logging.info(f"Final marks saved to {os.path.abspath(final_csv_path)}")
     
     # Print to console
+    results_to_print_df.index = range(1, len(results_to_print_df) + 1)
     print(tabulate(results_to_print_df, headers='keys', tablefmt='psql', floatfmt=".2f"))

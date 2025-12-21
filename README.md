@@ -160,6 +160,26 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 - `--keep-html`: If set, keeps the intermediate HTML files used for PDF generation.
 - `--generate-fakes <int>`: Generates a number of simulated scans with fake answers for testing the correction process (default: 0).
 - `--generate-references`: If set, generates a reference scan with the correct answers marked for each model.
+- `--custom-header <str>`: Markdown string or path to a Markdown file to insert before the questions (e.g., instructions).
+
+### Comprehensive Example
+
+```bash
+pexams generate my_questions.md --output-dir ./generated_exam \
+    --exam-title "Computer Systems - Midterm Exam" \
+    --exam-course "Master in Computer Engineering" \
+    --exam-date "2025-12-19" \
+    --num-models 4 \
+    --font-size "9pt" \
+    --lang "es" \
+    --columns 2 \
+    --total-students 22 \
+    --extra-model-templates 2 \
+    --generate-fakes 1 \
+    --generate-references \
+    --keep-html \
+    --custom-header "**Instructions:** Incorrect answers will be penalized by **-0.25 points** (a correct answer is +1 point). You are only allowed to have a pen, corrector fluid, and your ID card on top of the table."
+```
 
 #### `pexams correct`
 
@@ -167,6 +187,21 @@ Corrects scanned exams, runs analysis, and optionally fills marks into a student
 
 ```bash
 pexams correct --input-path <path> --exam-dir <path> --output-dir <path> [OPTIONS]
+```
+
+**Comprehensive Example:**
+
+```bash
+pexams correct \
+    --input-path ./generated_exam/simulated_scans \
+    --exam-dir ./generated_exam \
+    --output-dir ./generated_exam/correction_results \
+    --input-csv ./grades.csv \
+    --id-column "Student ID" \
+    --mark-column "Midterm Mark" \
+    --fuzzy-id-match 80 \
+    --penalty 0.25 \
+    --input-encoding "utf-8"
 ```
 
 - The `--input-path` can be a single PDF file or a folder of images (PNG, JPG).
@@ -178,12 +213,48 @@ pexams correct --input-path <path> --exam-dir <path> --output-dir <path> [OPTION
 - `--id-column <name>`: Column name in input file containing student IDs.
 - `--mark-column <name>`: Column name to fill with marks (will be created if missing).
 - `--fuzzy-id-match <0-100>`: Threshold for fuzzy matching of IDs (default 100 = exact match only).
+- `--input-encoding <str>`: Encoding of the input CSV file (default `utf-8`). Useful if you encounter encoding errors, in which case you can try `latin1` or `utf-8-sig`.
+- `--input-sep <str>`: Separator for the input CSV file (default `,`). If your CSV uses semicolons (common in Europe), pass `--input-sep semi` or `--input-sep ";"`.
+- `--output-decimal-sep <str>`: Decimal separator for the output marks (default `.`). Use `,` if your locale requires comma decimals (e.g., `--output-decimal-sep ","`).
+- `--simplify-csv`: If set, the output CSV (`*_with_marks.csv`) will only keep the columns specified by `--id-column`, `--name-column`, and `--mark-column`. This is useful for creating a clean file for importing into a gradebook.
+- `--name-column <name>`: Column name in input file containing student names. Required if `--simplify-csv` is used.
+
+**Scoring Arguments:**
+
+- `--penalty <float>`: Score penalty for wrong answers (e.g., `0.25`). Default is `0.0`. Formula: `score = correct_answers - (wrong_answers * penalty)`. Note that `wrong_answers` does not include blank/unanswered questions.
 
 **Other Arguments:**
 
 - `--void-questions <str>`: Comma-separated list of question numbers to exclude from scoring.
 - `--void-questions-nicely <str>`: Comma-separated list of question IDs to void "nicely".
-- `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. This is useful if you manually correct OCR errors in the CSV file and want to recalculate the final grades.
+- `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. 
+
+### Manual Correction Workflow
+
+If you find errors in the automatic correction (e.g., an incorrect student ID or a misread answer), you can manually fix them without re-running the time-consuming image processing.
+
+1.  Open the `correction_results.csv` file in the output directory.
+2.  Manually edit the values (e.g., correct a student ID or change an answer from 'A' to 'B' or 'NA').
+3.  Save the CSV file.
+4.  Run the `correct` command again with the `--only-analysis` flag.
+
+```bash
+pexams correct \
+    --exam-dir ./generated_exam \
+    --output-dir ./generated_exam/correction_results \
+    --only-analysis \
+    --penalty 0.25
+```
+
+This will re-read the corrected CSV, recalculate all scores (applying penalties, void questions, etc.), regenerate the plots, and update the final marks.
+
+### Recommended Scan Settings
+
+For best results with the automatic correction, please use the following settings when scanning the answer sheets:
+
+-   **Resolution**: **300 DPI** is recommended. Lower resolutions (e.g., 150 DPI) might work but are less reliable for OCR.
+-   **Color Mode**: **Grayscale** is highly recommended. **Do NOT use "Black and White" (1-bit / Threshold)** mode, as it destroys the details needed for accurate bubble detection and OCR. Color scans also work but produce larger files without significant benefit.
+-   **Format**: PDF (multi-page) or images (PNG/JPG).
 
 #### `pexams test`
 
@@ -273,4 +344,4 @@ Pull requests are welcome! Please feel free to submit an issue or pull request.
 ## TODO
 
 - Create a set of layouts allowing for more answers per question, or overall more questions (more compact), etc.
-- Allow to add extra content to the questions sheets either before or after them, such as images, code, a table, etc.
+- Add cli argument to change the scoring system, such as using German grading (1-6) instead of the default 0-10, or using a 100-point scale instead of the default 0-10.

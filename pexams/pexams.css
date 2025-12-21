@@ -24,7 +24,15 @@ h1, h2, h3, h4, h5, h6 {
 h1 { font-size: 14pt; }
 h2 { font-size: 12pt; }
 
-.exam-title { font-size: 14pt; margin-bottom: 2mm; }
+.exam-title { 
+    font-size: 14pt; 
+    margin-bottom: 2mm; 
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    /* Limit width to ensure ellipsis triggers inside absolute container */
+    width: 100%;
+}
 .exam-subtitle { font-size: 12pt; margin-bottom: 2mm; }
 
 /* --- PAGE CONTAINERS --- */
@@ -45,10 +53,14 @@ h2 { font-size: 12pt; }
     /* Shared styles for header text elements */
     font-size: 10pt;
     color: #333;
+    overflow: hidden;
 }
 .exam-info span {
     margin-right: 5mm;
     display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 .student-info, .student-name, .student-id-grid {
@@ -72,6 +84,7 @@ h2 { font-size: 12pt; }
     justify-content: center;
     font-size: 10pt;
     font-weight: normal;
+    overflow: hidden;
 }
 
 .instructions-box {
@@ -80,6 +93,7 @@ h2 { font-size: 12pt; }
     font-size: 7pt;
     width: 70mm;
     border-radius: 2px;
+    overflow: hidden;
 }
 .instructions-box h4 {
     margin-top: 0;
@@ -271,4 +285,14 @@ img[alt~="right"] {
     float: right;
     margin-left: 1em;
     margin-bottom: 0.5em;
+}
+
+/* --- CUSTOM HEADER --- */
+.custom-header {
+    margin-bottom: 1em;
+    break-inside: avoid-column;
+    column-span: all;
+}
+.custom-header p:last-child {
+    margin-bottom: 0;
 }
