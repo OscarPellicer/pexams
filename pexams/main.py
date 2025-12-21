@@ -58,7 +58,8 @@ def main():
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",
         help="Encoding of the input CSV file (default: utf-8).")
     correct_parser.add_argument( "--input-sep", type=str, default=",",
-        help="Separator for the input CSV file (default: comma ','). Use 'semi' for semicolon ';'.")
+        help="Separator for the input CSV file (default: comma ','). Use 'semi' for semicolon ';', "+\
+            "'tab' for tab '\t', 'pipe' for pipe '|', or any other separator.")
     correct_parser.add_argument( "--output-decimal-sep", type=str, default=".",
         help="Decimal separator for the output marks (default: dot '.'). Use ',' for comma.")
     correct_parser.add_argument( "--only-analysis", action="store_true",    
@@ -166,7 +167,11 @@ def main():
                 # Input CSV Filling
                 if args.input_csv:
                     if args.id_column and args.mark_column:
-                         sep = ';' if args.input_sep == 'semi' else args.input_sep
+                         sep =  ';' if args.input_sep == 'semi' else \
+                                ',' if args.input_sep == 'comma' else \
+                                '\t' if args.input_sep == 'tab' else \
+                                '|' if args.input_sep == 'pipe' else \
+                                args.input_sep
                          fill_marks_in_file(
                              args.input_csv, args.id_column, args.mark_column, results_csv, 
                              args.fuzzy_id_match, args.input_encoding, sep, args.output_decimal_sep,

@@ -3,6 +3,7 @@ import logging
 import pandas as pd
 import Levenshtein
 import csv
+from tabulate import tabulate
 from pexams import utils
 
 def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_results_csv: str, 
@@ -24,29 +25,7 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
         used_sep = sep
         
         if file_ext == '.csv':
-            try:
-                df_input = pd.read_csv(input_file, encoding=encoding, sep=sep)
-            except pd.errors.ParserError:
-                # Fallback mechanism for common separators
-                alternatives = [';', '\t', ',', '|']
-                if sep in alternatives:
-                    alternatives.remove(sep)
-                
-                success = False
-                for alt_sep in alternatives:
-                    try:
-                        logging.warning(f"Failed to parse CSV with separator '{sep}'. Retrying with '{alt_sep}'...")
-                        df_input = pd.read_csv(input_file, encoding=encoding, sep=alt_sep)
-                        logging.info(f"Successfully parsed CSV with separator '{alt_sep}'.")
-                        used_sep = alt_sep
-                        success = True
-                        break
-                    except pd.errors.ParserError:
-                        continue
-                
-                if not success:
-                    raise pd.errors.ParserError(f"Could not parse CSV file with separators: {sep}, {', '.join(alternatives)}")
-
+            df_input = pd.read_csv(input_file, encoding=encoding, sep=sep)
         elif file_ext in ['.xlsx', '.xls']:
             df_input = pd.read_excel(input_file)
         elif file_ext == '.tsv':
@@ -70,6 +49,9 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
         if id_col not in df_input.columns:
             logging.error(f"ID column '{id_col}' not found in input file.")
             return
+
+        # Ensure mark column in marks df is numeric
+        df_marks[mark_source_col] = pd.to_numeric(df_marks[mark_source_col], errors='coerce')
             
         df_input[id_col] = df_input[id_col].astype(str).str.strip().str.upper()
         df_marks['student_id'] = df_marks['student_id'].astype(str).str.strip().str.upper()
@@ -86,7 +68,11 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
         matched_ocr_ids = set()
         matched_rows_indices = set()
         
+        # Store mapping to update final_marks.csv later
+        ocr_to_real_mapping = {}
+
         # 1. Exact Matching
+        
         exact_matches = []
         for idx, row in df_input.iterrows():
             target_id = row[id_col]
@@ -98,14 +84,16 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
                 # Round to 2 decimal places
                 if isinstance(mark_val, (int, float)):
                     mark_val = round(mark_val, 2)
-                    if decimal_sep != '.':
-                        mark_val = str(mark_val).replace('.', decimal_sep)
                     
                 df_input.at[idx, mark_col] = mark_val
                 matched_ocr_ids.add(target_id)
                 matched_rows_indices.add(idx)
                 exact_matches.append(target_id)
                 matched_count += 1
+                
+                # Record mapping for exact match (OCR ID matches Target ID)
+                real_name = row[name_col] if name_col and name_col in df_input.columns else None
+                ocr_to_real_mapping[target_id] = {'id': target_id, 'name': real_name}
         
         if exact_matches:
             logging.info(f"Exact matched {len(exact_matches)} students directly.")
@@ -149,8 +137,6 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
                 # Format mark for CSV (string with comma for decimal if needed)
                 if isinstance(mark_val, (int, float)):
                     mark_val = round(mark_val, 2)
-                    if decimal_sep != '.':
-                        mark_val = str(mark_val).replace('.', decimal_sep)
                     
                 df_input.at[idx, mark_col] = mark_val
                 logging.info(f"Fuzzy matched '{t_id}' with OCR ID '{o_id}' (Score: {score:.1f}%) -> Mark: {mark_val}")
@@ -159,6 +145,10 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
                 matched_ocr_ids.add(o_id) # Update global set for reporting
                 used_target_indices.add(idx)
                 used_ocr_ids.add(o_id)
+
+                # Record mapping for fuzzy match
+                real_name = df_input.at[idx, name_col] if name_col and name_col in df_input.columns else None
+                ocr_to_real_mapping[o_id] = {'id': t_id, 'name': real_name}
 
             # Second pass: Show skipped matches below threshold
             logging.info("-" * 20 + f" Current Matching Threshold: {fuzzy_threshold} " + "-" * 20)
@@ -206,7 +196,15 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
         output_file = f"{base_name}_with_marks{ext}"
         
         if file_ext == '.csv':
-            df_input.to_csv(output_file, index=False, encoding=used_encoding, sep=used_sep, quoting=csv.QUOTE_NONNUMERIC)
+            # Ensure the mark column is numeric so to_csv respects the decimal separator
+            # Only if column exists (it should, as we added it or it existed)
+            if mark_col in df_input.columns:
+                df_input[mark_col] = pd.to_numeric(df_input[mark_col], errors='coerce')
+                
+            # Pass decimal separator to to_csv to handle float formatting
+            # QUOTE_NONNUMERIC will quote strings (ID, Name) but NOT floats (Mark), 
+            # unless they were converted to strings.
+            df_input.to_csv(output_file, index=False, encoding=used_encoding, sep=used_sep, decimal=decimal_sep, quoting=csv.QUOTE_MINIMAL)
         elif file_ext in ['.xlsx', '.xls']:
             df_input.to_excel(output_file, index=False)
         elif file_ext == '.tsv':
@@ -228,6 +226,41 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
         if unmatched_ocr_final:
              logging.warning(f"Unmatched exams from OCR ({len(unmatched_ocr_final)}): {unmatched_ocr_final}")
              logging.warning(f"Tip: Try increasing fuzzy match threshold (lower value) or correct the scanned IDs manually in {correction_results_csv}")
+
+        # Update final_marks.csv with matched real IDs and names
+        if ocr_to_real_mapping and os.path.exists(final_marks_path):
+            try:
+                updated_count = 0
+                for ocr_id, info in ocr_to_real_mapping.items():
+                    # Find row(s) with this OCR ID
+                    mask = df_marks['student_id'] == ocr_id
+                    if mask.any():
+                        df_marks.loc[mask, 'student_id'] = info['id']
+                        if info['name']:
+                             df_marks.loc[mask, 'student_name'] = info['name']
+                        updated_count += 1
+                
+                if updated_count > 0:
+                    df_marks.to_csv(final_marks_path, index=False)
+                    logging.info(f"Updated final_marks.csv with {updated_count} matched student IDs/Names.")
+                    
+                    # Print updated student marks
+                    print("\n--- Student Marks (Updated from Roster) ---")
+                    # We might need to select specific columns or just print what we have
+                    # We assume structure similar to analysis.py: student_id, student_name, score, max_score, mark
+                    if 'score' in df_marks.columns and 'max_score' in df_marks.columns:
+                        cols_to_print = ['student_id', 'student_name', 'score', 'max_score', 'mark']
+                        # Ensure columns exist before filtering
+                        cols_to_print = [c for c in cols_to_print if c in df_marks.columns]
+                        results_to_print = df_marks[cols_to_print].copy()
+                        results_to_print.index = range(1, len(results_to_print) + 1)
+                        print(tabulate(results_to_print, headers='keys', tablefmt='psql', floatfmt=".2f"))
+                    else:
+                        # Fallback if structure is different
+                        print(tabulate(df_marks, headers='keys', tablefmt='psql', floatfmt=".2f"))
+            
+            except Exception as e:
+                logging.error(f"Failed to update final_marks.csv: {e}")
 
     except Exception as e:
         logging.error(f"Failed to fill marks in input file: {e}", exc_info=True)
