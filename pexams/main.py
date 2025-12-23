@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import random
 
 # Attempt to import pandas for data handling
 try:
@@ -54,7 +55,7 @@ def main():
     correct_parser.add_argument( "--fuzzy-id-match", type=int, default=100,
         help="Fuzzy matching threshold (0-100) for student IDs.")
     correct_parser.add_argument( "--penalty", type=float, default=0.0,
-        help="Score penalty for wrong answers (positive float, e.g. 0.25). Default is 0.0.")
+        help="Score penalty for wrong answers (positive float, e.g. 0.33333). Default is 0.0.")
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",
         help="Encoding of the input CSV file (default: utf-8).")
     correct_parser.add_argument( "--input-sep", type=str, default=",",
@@ -89,11 +90,13 @@ def main():
     generate_parser.add_argument("--exam-course", type=str, default=None, help="Course name for the exam.")
     generate_parser.add_argument("--exam-date", type=str, default=None, help="Date of the exam.")
     generate_parser.add_argument("--lang", type=str, default="en", help="Language for the answer sheet / output.")
-    generate_parser.add_argument( "--num-models", type=int, default=4, help="Number of different exam models to generate (pexams only).")
+    generate_parser.add_argument("--num-models", type=int, default=4, help="Number of different exam models to generate (pexams only).")
     generate_parser.add_argument("--columns", type=int, default=1, choices=[1, 2, 3], help="Number of columns (pexams only).")
     generate_parser.add_argument("--font-size", type=str, default="11pt", help="Base font size (pexams only).")
     generate_parser.add_argument("--total-students", type=int, default=0, help="Total number of students for mass PDF generation (pexams only).")
     generate_parser.add_argument("--extra-model-templates", type=int, default=0, help="Number of extra template sheets to generate per model (pexams only).")
+    generate_parser.add_argument("--shuffle-questions", type=int, default=42, help="Seed for shuffling questions (default: 42). If not provided, questions are not shuffled (input order preserved).")
+    generate_parser.add_argument("--shuffle-answers", type=int, default=42, help="Seed for shuffling answers (options) (default: 42). Must not be None, answers must be shuffled.")
     generate_parser.add_argument("--keep-html", action="store_true", help="Keep intermediate HTML files (pexams only).")
     generate_parser.add_argument("--generate-fakes", type=int, default=0, help="Generate simulated scans (pexams only).")
     generate_parser.add_argument("--generate-references", action="store_true", help="Generate reference scan (pexams only).")
@@ -186,7 +189,14 @@ def main():
         questions = load_and_prepare_questions(args.input_file)
         if questions is None:
             return
-            
+
+        if args.shuffle_answers is None:
+            logging.error("--shuffle-answers cannot be None.")
+            return
+
+        # Set global seeds for all exporters
+        utils.set_seeds(seed_questions=args.shuffle_questions, seed_answers=args.shuffle_answers)
+        
         output_fmt = args.to
         out_dir = args.output_dir
         
@@ -219,22 +229,33 @@ def main():
                 extra_model_templates=args.extra_model_templates,
                 custom_header=args.custom_header
             )
-        elif output_fmt == "rexams":
-            rexams_converter.prepare_for_rexams(questions, out_dir)
-        elif output_fmt == "wooclap":
-            wooclap_file = os.path.join(out_dir, "wooclap_export.csv")
-            wooclap_converter.convert_to_wooclap(questions, wooclap_file)
-        elif output_fmt == "gift":
-            gift_file = os.path.join(out_dir, "questions.gift")
-            gift_converter.convert_to_gift(questions, gift_file)
-        elif output_fmt == "md":
-            md_file = os.path.join(out_dir, "questions.md")
-            md_converter.save_questions_to_md(questions, md_file)
-        elif output_fmt == "moodle":
-            moodle_file = os.path.join(out_dir, "questions.xml")
-            moodle_xml_converter.convert_to_moodle_xml(questions, moodle_file)
         else:
-            logging.error(f"Unknown output format: {output_fmt}. Supported formats: pexams, rexams, wooclap, gift, md, moodle.")
+            # For non-pexams formats, we apply the shuffling here before passing to converter.
+            # (Note: pexams format handles shuffling internally to support multiple models)
+            
+            # 1. Shuffle Questions (order)
+            utils.shuffle_questions_list(questions)
+            
+            # 2. Shuffle Answers (options)
+            for q in questions:
+                utils.shuffle_options_for_question(q)
+                
+            if output_fmt == "rexams":
+                rexams_converter.prepare_for_rexams(questions, out_dir)
+            elif output_fmt == "wooclap":
+                wooclap_file = os.path.join(out_dir, "wooclap_export.csv")
+                wooclap_converter.convert_to_wooclap(questions, wooclap_file)
+            elif output_fmt == "gift":
+                gift_file = os.path.join(out_dir, "questions.gift")
+                gift_converter.convert_to_gift(questions, gift_file)
+            elif output_fmt == "md":
+                md_file = os.path.join(out_dir, "questions.md")
+                md_converter.save_questions_to_md(questions, md_file)
+            elif output_fmt == "moodle":
+                moodle_file = os.path.join(out_dir, "questions.xml")
+                moodle_xml_converter.convert_to_moodle_xml(questions, moodle_file)
+            else:
+                logging.error(f"Unknown output format: {output_fmt}. Supported formats: pexams, rexams, wooclap, gift, md, moodle.")
 
 if __name__ == "__main__":
     main()

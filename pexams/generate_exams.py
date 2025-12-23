@@ -13,6 +13,7 @@ from pypdf import PdfWriter, PdfReader
 
 from pexams.schemas import PexamQuestion, PexamExam
 from pexams import layout
+from pexams import utils
 from pexams.translations import LANG_STRINGS
 
 def _generate_answer_sheet_html(
@@ -328,14 +329,11 @@ def generate_exams(
         }
         custom_header_html = markdown.markdown(str(header_content), extensions=extensions, extension_configs=extension_configs)
         custom_header_html = f'<div class="custom-header">{custom_header_html}</div>'
-
-    # --- Shuffle questions once to have a consistent order for all models ---
+        
+    # We work on a copy to avoid mutating the original list if it's reused
     questions_shuffled = list(questions_list)
-    random.shuffle(questions_shuffled)
-    # Re-number questions for the consistent order
-    for q_idx, q in enumerate(questions_shuffled, 1):
-        q.id = q_idx
-
+    utils.shuffle_questions_list(questions_shuffled)
+    
     generated_pdfs = []
 
     for i in range(1, num_models + 1):
@@ -348,8 +346,8 @@ def generate_exams(
                 # Store the original correct option before shuffling
                 original_correct_option = q.options[q.correct_answer_index]
                 
-                # Shuffle the options
-                random.shuffle(q.options)
+                # Shuffle the options using the global util function
+                utils.shuffle_options_for_question(q)
                 
                 # Find the new index of the correct option and update the is_correct flag
                 try:
@@ -416,7 +414,8 @@ def generate_exams(
                 browser = p.chromium.launch()
                 page = browser.new_page()
                 # Use file:// protocol to load the local HTML file
-                page.goto(f"file:///{os.path.abspath(html_filepath)}", wait_until="networkidle")
+                abs_html_path = os.path.abspath(html_filepath).replace('\\', '/')
+                page.goto(f"file:///{abs_html_path}", wait_until="networkidle")
                 
                 # Wait for MathJax to finish rendering.
                 # typesetPromise() will not resolve until all math is rendered.

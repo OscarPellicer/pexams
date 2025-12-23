@@ -9,6 +9,8 @@ from typing import Optional, List, Dict
 from tabulate import tabulate
 from matplotlib.patches import Patch
 import textwrap
+from playwright.sync_api import sync_playwright
+import markdown
 
 from pexams import utils
 
@@ -17,27 +19,22 @@ def _truncate_text(text, width=60):
     # Use textwrap.shorten to truncate
     return textwrap.shorten(str(text), width=width, placeholder="...")
 
-def _plot_answer_distribution(df, solutions_per_model, output_dir):
+def _get_translated_answers(df, solutions_per_model):
     """
-    Plots the distribution of answers for each question in horizontal bar charts,
-    normalized to a reference model's answer order. Creates multiple plot files
-    if there are many questions.
+    Translates all student answers to the reference model's option indexing.
+    Returns a DataFrame with columns ['question_id', 'ref_answer_idx'].
     """
     if not solutions_per_model:
-        logging.warning("Cannot generate answer distribution plot: solutions_per_model is empty.")
-        return
+        return pd.DataFrame()
 
-    # Assuming the first model key is the reference (e.g., "1")
     ref_model_key = sorted(solutions_per_model.keys())[0]
     ref_solutions = solutions_per_model[ref_model_key]
     
-    # Create a mapping from option text to the reference index for each question
     option_text_to_ref_idx = {}
     for q_id, q_data in ref_solutions.items():
         if 'options' in q_data:
             option_text_to_ref_idx[q_id] = {opt['text']: i for i, opt in enumerate(q_data['options'])}
 
-    # Translate all student answers to the reference model's option indexing
     all_answers_translated = []
     for _, row in df.iterrows():
         model_id = str(row['model_id'])
@@ -50,11 +47,24 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
             if not q_num_str.startswith('answer_'):
                 continue
             
-            q_id = int(q_num_str.split('_')[1])
-            if q_id not in current_model_solutions or not isinstance(ans_char, str):
+            try:
+                parts = q_num_str.split('_')
+                if len(parts) < 2: continue
+                q_id = int(parts[1])
+            except ValueError:
+                continue
+
+            # Check if answer is NA (string 'NA' or NaN/None)
+            # We explicitly check for 'NA' string first, then for nulls
+            is_na = (ans_char == 'NA') or pd.isna(ans_char)
+
+            if not is_na and not isinstance(ans_char, str):
                 continue
             
-            if ans_char == 'NA':
+            if q_id not in current_model_solutions:
+                continue
+            
+            if is_na:
                 all_answers_translated.append({'question_id': q_id, 'ref_answer_idx': 'NA'})
                 continue
 
@@ -75,128 +85,391 @@ def _plot_answer_distribution(df, solutions_per_model, output_dir):
                 ref_idx = option_text_to_ref_idx[q_id][chosen_option_text]
                 all_answers_translated.append({'question_id': q_id, 'ref_answer_idx': ref_idx})
 
-    if not all_answers_translated:
-        logging.warning("Could not generate answer distribution plot: No valid translated answers found.")
+    return pd.DataFrame(all_answers_translated)
+
+def _save_answer_stats_csv(translated_df, solutions_per_model, output_dir):
+    """Saves answer statistics to a CSV, including original IDs if available."""
+    if translated_df.empty or not solutions_per_model:
         return
 
-    translated_df = pd.DataFrame(all_answers_translated)
+    ref_model_key = sorted(solutions_per_model.keys())[0]
+    ref_solutions = solutions_per_model[ref_model_key]
     
-    question_ids = sorted(ref_solutions.keys())
-    num_questions = len(question_ids)
+    stats_data = []
     
-    QUESTIONS_PER_PAGE = 6
-    COLS = 2
-    ROWS = int(np.ceil(QUESTIONS_PER_PAGE / COLS))
-    
-    num_pages = int(np.ceil(num_questions / QUESTIONS_PER_PAGE))
-
-    for page_idx in range(num_pages):
-        start_idx = page_idx * QUESTIONS_PER_PAGE
-        end_idx = start_idx + QUESTIONS_PER_PAGE
-        page_question_ids = question_ids[start_idx:end_idx]
+    # Get all unique questions from reference
+    for q_id in sorted(ref_solutions.keys()):
+        q_data = ref_solutions[q_id]
         
-        if not page_question_ids:
-            continue
+        # Determine original ID
+        original_id = q_data.get('original_id', q_id)
+        if original_id is None: 
+            original_id = q_id
             
-        # Dynamically calculate required rows for this page to avoid empty space
-        num_q_on_page = len(page_question_ids)
-        rows_needed = int(np.ceil(num_q_on_page / COLS))
-
-        fig, axes = plt.subplots(rows_needed, COLS, figsize=(16, 2.5 * rows_needed))
-        # Flatten axes for easy iteration, handle case of 1x1 or 1D array
-        if isinstance(axes, np.ndarray):
-            axes_flat = axes.flatten()
-        else:
-            axes_flat = [axes]
-            
-        for i, q_id in enumerate(page_question_ids):
-            ax = axes_flat[i]
-            
-            q_data = ref_solutions[q_id]
-            q_text = q_data.get('text', f'Question {q_id}')
-            options = q_data.get('options', [])
-            correct_idx = q_data.get('correct_answer_index')
-            
-            # Get counts for this question
-            q_counts = translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
-            
-            # Prepare data for plotting
-            bar_labels = []
-            widths = []
-            colors = []
-            
-            # Iterate through options + NA
-            for opt_idx, opt in enumerate(options):
-                opt_text = _truncate_text(opt['text'], width=60) # Shorten more aggressively
-                bar_labels.append(f"{chr(ord('A') + opt_idx)}) {opt_text}")
-                widths.append(q_counts.get(opt_idx, 0))
-                # Softer colors
-                colors.append('#77DD77' if opt_idx == correct_idx else '#FF6961') 
-                
-            # Add NA
-            bar_labels.append("NA")
-            widths.append(q_counts.get('NA', 0))
-            colors.append('#CFCFC4') # Softer gray for NA
-            
-            # Horizontal Bar Plot
-            y_pos = np.arange(len(bar_labels))
-            
-            # Add small epsilon (0.05) to widths for visualization so 0-count bars are visible (showing color)
-            plot_widths = [w + 0.5 for w in widths]
-            
-            # No spacing between bars (height=1.0)
-            rects = ax.barh(y_pos, plot_widths, align='center', color=colors, height=1.0)
-            
-            # Remove default Y axis labels (we'll put text inside)
-            ax.set_yticks([]) 
-            ax.invert_yaxis()  # Labels read top-to-bottom
-            
-            # Remove all spines except bottom
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_visible(False)
-            ax.spines['bottom'].set_visible(True)
-            
-            # Set X axis (0 to N students)
-            total_students = len(df)
-            
-            # Ensure xlim covers the max width (which might be > total_students due to +0.2)
-            max_width = max(plot_widths) if plot_widths else 0
-            ax.set_xlim(0, max(total_students, max_width))
-            
-            # Use default tick locations, but maybe limit range?
-            # User asked: "keep the x axis ticks at default"
-            # We just leave ax.set_xticks() alone.
-            
-            # No x-label
-            ax.set_xlabel('')
-            
-            ax.set_title(_truncate_text(f"{q_id}. {q_text}", width=100), fontsize=12, loc='left', pad=5)
-            
-            # Add text inside bars
-            for rect, label, count in zip(rects, bar_labels, widths):               
-                # Use offset points to place text consistently regardless of x-axis scale
-                ax.annotate(label, 
-                            xy=(0, rect.get_y() + rect.get_height()/2),
-                            xytext=(5, 0), # 5 points padding from left
-                            textcoords="offset points",
-                            ha='left', va='center', fontsize=12, color='black')
-
-            
-        # Hide unused subplots completely
-        for j in range(len(page_question_ids), len(axes_flat)):
-            axes_flat[j].axis('off')
-            
-        plt.tight_layout()
+        q_text = _truncate_text(q_data.get('text', ''), width=100)
         
-        suffix = f"_p{page_idx+1}" if num_pages > 1 else ""
-        plot_filename = os.path.join(output_dir, f"answer_distribution{suffix}.png")
-        try:
-            plt.savefig(plot_filename)
-            logging.info(f"Answer distribution plot saved to {os.path.abspath(plot_filename)}")
-        except Exception as e:
-            logging.error(f"Error saving answer distribution plot: {e}")
-        plt.close(fig)
+        # Count answers
+        q_counts = translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
+        
+        row = {
+            'original_id': original_id,
+            'exam_q_id': q_id,
+            'question_text': q_text,
+            'total_answers': int(q_counts.sum()),
+            'NA_count': int(q_counts.get('NA', 0))
+        }
+        
+        options = q_data.get('options', [])
+        for i, opt in enumerate(options):
+            label = chr(ord('A') + i)
+            count = q_counts.get(i, 0)
+            row[f'option_{label}_count'] = int(count)
+            # Add option text for clarity
+            row[f'option_{label}_text'] = _truncate_text(opt['text'], width=50)
+            
+        stats_data.append(row)
+        
+    if not stats_data:
+        return
+        
+    stats_df = pd.DataFrame(stats_data)
+    output_path = os.path.join(output_dir, "question_stats.csv")
+    stats_df.to_csv(output_path, index=False)
+    logging.info(f"Question statistics saved to {os.path.abspath(output_path)}")
+
+def _generate_stats_pdf(df, solutions_per_model, output_dir, mark_plot_path=None):
+    """
+    Generates a PDF report with answer statistics using HTML and Playwright.
+    Also saves the stats CSV.
+    """
+    if not solutions_per_model:
+        return
+
+    logging.info("Generating PDF statistics report...")
+    translated_df = _get_translated_answers(df, solutions_per_model)
+    if translated_df.empty:
+        logging.warning("No translated answers found for report.")
+        return
+
+    # Save CSV stats (legacy support / raw data)
+    _save_answer_stats_csv(translated_df, solutions_per_model, output_dir)
+
+    ref_model_key = sorted(solutions_per_model.keys())[0]
+    ref_solutions = solutions_per_model[ref_model_key]
+    
+    total_students = len(df)
+    
+    # Calculate stats
+    marks = df['mark_clipped']
+    stats = {
+        'total_students': total_students,
+        'mean': marks.mean(),
+        'median': marks.median(),
+        'std': marks.std(),
+        'min': marks.min(),
+        'max': marks.max(),
+        'pass_count': len(marks[marks >= 5.0]),
+        'pass_rate': (len(marks[marks >= 5.0]) / total_students * 100) if total_students > 0 else 0
+    }
+
+    # Markdown extension config
+    extensions = [
+        'pymdownx.arithmatex',
+        'pymdownx.inlinehilite',
+        'fenced_code',
+        'codehilite'
+    ]
+    extension_configs = {
+        'pymdownx.arithmatex': {'generic': True}
+    }
+
+    def render_md(text):
+        if not text: return ""
+        html = markdown.markdown(str(text).replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
+        if html.startswith("<p>"):
+            html = html[3:-4]
+        return html
+
+    # CSS for the report
+    css = """
+    body { 
+        font-family: 'Open Sans', 'Segoe UI', Tahoma, sans-serif; 
+        margin: 0; 
+        padding: 20px 30px; 
+        color: #333; 
+        background-color: #fff; 
+        font-size: 13px;
+    }
+    h1 { text-align: left; color: #2c3e50; margin-bottom: 25px; font-size: 24px; }
+    
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin-bottom: 30px;
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+    }
+    .stat-item {
+        display: flex;
+        flex-direction: column;
+    }
+    .stat-label {
+        font-size: 11px;
+        color: #6c757d;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .stat-value {
+        font-size: 18px;
+        font-weight: 600;
+        color: #2c3e50;
+    }
+    
+    .section-title { 
+        border-bottom: 2px solid #2c3e50; 
+        padding-bottom: 8px; 
+        margin-top: 30px; 
+        margin-bottom: 15px; 
+        color: #2c3e50; 
+        font-size: 18px;
+        text-align: left;
+    }
+    
+    .distribution-section { text-align: center; margin-bottom: 40px; page-break-after: always; }
+    .distribution-img { max-width: 80%; height: auto; border: 1px solid #ddd; padding: 5px; border-radius: 4px; }
+    
+    .question-block { 
+        margin-bottom: 15px; 
+        background: #fff; 
+        border: 1px solid #e0e0e0; 
+        border-radius: 6px; 
+        padding: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        page-break-inside: avoid;
+    }
+    .question-header { 
+        font-weight: 600; 
+        font-size: 1.05em; 
+        margin-bottom: 8px; 
+        color: #2c3e50;
+    }
+    
+    .options-list { display: flex; flex-direction: column; gap: 5px; }
+    
+    .option-row { 
+        position: relative; 
+        border: 1px solid #eee; 
+        border-radius: 4px; 
+        overflow: hidden; 
+        background-color: #f9f9f9;
+        font-size: 0.95em;
+    }
+    
+    .option-bg { 
+        position: absolute; 
+        top: 0; left: 0; bottom: 0; 
+        z-index: 0; 
+        height: 100%;
+    }
+    
+    /* Colors for bars */
+    .bg-correct { background-color: #d4edda; border-right: 1px solid #c3e6cb; } /* Light Green */
+    .bg-incorrect { background-color: #f8d7da; border-right: 1px solid #f5c6cb; } /* Light Red */
+    .bg-na { background-color: #e2e3e5; border-right: 1px solid #d6d8db; } /* Light Gray */
+    
+    .option-content { 
+        position: relative; 
+        z-index: 1; 
+        padding: 8px 12px; 
+        display: flex; 
+        justify-content: space-between; 
+        align-items: center;
+        min-height: 24px;
+    }
+    
+    .option-text-container { display: flex; align-items: center; gap: 10px; flex: 1; }
+    .option-label { font-weight: bold; min-width: 20px; color: #555; }
+    .option-text { flex: 1; }
+    
+    .badge { 
+        font-size: 0.7em; 
+        padding: 2px 6px; 
+        border-radius: 4px; 
+        font-weight: bold;
+        text-transform: uppercase;
+        margin-left: 10px;
+        white-space: nowrap;
+    }
+    .badge-correct { background-color: #28a745; color: white; }
+    
+    .stats { 
+        font-family: 'Consolas', monospace; 
+        font-weight: bold; 
+        color: #555; 
+        white-space: nowrap; 
+        margin-left: 15px;
+        font-size: 0.9em;
+    }
+    
+    /* Image handling in questions */
+    img { max-width: 100%; height: auto; }
+    """
+    
+    html_parts = []
+    html_parts.append(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Exam Statistics Report</title>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap">
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        <style>{css}</style>
+    </head>
+    <body>
+        <h1>Exam Statistics Report</h1>
+        
+        <div class="stats-grid">
+            <div class="stat-item">
+                <span class="stat-label">Total Students</span>
+                <span class="stat-value">{stats['total_students']}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Mean Score</span>
+                <span class="stat-value">{stats['mean']:.2f}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Median Score</span>
+                <span class="stat-value">{stats['median']:.2f}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Std Dev</span>
+                <span class="stat-value">{stats['std']:.2f}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Min / Max</span>
+                <span class="stat-value">{stats['min']:.1f} / {stats['max']:.1f}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Pass Rate (≥5.0)</span>
+                <span class="stat-value">{stats['pass_rate']:.1f}%</span>
+            </div>
+        </div>
+    """)
+    
+    # Mark Distribution Plot
+    if mark_plot_path and os.path.exists(mark_plot_path):
+        abs_plot_path = os.path.abspath(mark_plot_path).replace('\\', '/')
+        html_parts.append(f"""
+        <div class="distribution-section">
+            <h2 class="section-title">Score Distribution</h2>
+            <img src="file:///{abs_plot_path}" class="distribution-img" alt="Score Distribution">
+        </div>
+        """)
+    
+    html_parts.append("<h2 class='section-title'>Question Analysis</h2>")
+    
+    for q_id in sorted(ref_solutions.keys()):
+        q_data = ref_solutions[q_id]
+        q_raw_text = q_data.get('text', f'Question {q_id}')
+        
+        # Render markdown for question
+        q_html_text = render_md(q_raw_text)
+        
+        options = q_data.get('options', [])
+        correct_idx = q_data.get('correct_answer_index')
+        
+        q_counts = translated_df[translated_df['question_id'] == q_id]['ref_answer_idx'].value_counts()
+        
+        html_parts.append(f"""
+        <div class="question-block">
+            <div class="question-header">{q_id}. {q_html_text}</div>
+            <div class="options-list">
+        """)
+        
+        for i, opt in enumerate(options):
+            label = chr(ord('A') + i)
+            opt_raw_text = opt['text']
+            
+            # Render markdown for option
+            opt_html_text = render_md(opt_raw_text)
+            
+            count = q_counts.get(i, 0)
+            percent = (count / total_students) * 100 if total_students > 0 else 0
+            
+            is_correct = (i == correct_idx)
+            bg_class = "bg-correct" if is_correct else "bg-incorrect"
+            
+            badge_html = '<span class="badge badge-correct">Correct</span>' if is_correct else ""
+            
+            html_parts.append(f"""
+            <div class="option-row">
+                <div class="option-bg {bg_class}" style="width: {percent}%;"></div>
+                <div class="option-content">
+                    <div class="option-text-container">
+                        <span class="option-label">{label})</span>
+                        <div class="option-text">{opt_html_text}</div>
+                        {badge_html}
+                    </div>
+                    <span class="stats">{count} ({percent:.1f}%)</span>
+                </div>
+            </div>
+            """)
+            
+        # Always add NA bar, even if count is 0, for consistency
+        na_count = q_counts.get('NA', 0)
+        percent = (na_count / total_students) * 100 if total_students > 0 else 0
+        
+        html_parts.append(f"""
+        <div class="option-row">
+            <div class="option-bg bg-na" style="width: {percent}%;"></div>
+            <div class="option-content">
+                <div class="option-text-container">
+                    <span class="option-label">NA</span>
+                    <div class="option-text">No Answer</div>
+                </div>
+                <span class="stats">{na_count} ({percent:.1f}%)</span>
+            </div>
+        </div>
+        """)
+            
+        html_parts.append("</div></div>") # Close options-list and question-block
+        
+    html_parts.append("</body></html>")
+    
+    full_html = "\n".join(html_parts)
+    
+    html_path = os.path.join(output_dir, "stats_report.html")
+    pdf_path = os.path.join(output_dir, "stats_report.pdf")
+    
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(full_html)
+        logging.info(f"Generated HTML report: {html_path}")
+    except Exception as e:
+        logging.error(f"Error saving HTML report: {e}")
+        return
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            abs_html_path = os.path.abspath(html_path).replace('\\', '/')
+            page.goto(f"file:///{abs_html_path}", wait_until="networkidle")
+            
+            # Wait for MathJax to finish rendering.
+            page.evaluate("() => MathJax.typesetPromise()")
+            page.wait_for_timeout(1000)
+
+            page.pdf(path=pdf_path, format="A4", print_background=True, 
+                     margin={"top": "15mm", "bottom": "15mm", "left": "15mm", "right": "15mm"})
+            browser.close()
+        logging.info(f"Statistics report saved to {os.path.abspath(pdf_path)}")
+    except Exception as e:
+        logging.error(f"Failed to convert report to PDF: {e}")
 
 def parse_q_list(q_str: Optional[str]) -> List[int]:
     """Converts a comma-separated string of question numbers to a sorted list of unique integers."""
@@ -262,17 +535,26 @@ def analyze_results(
     # --- Recalculate scores based on voiding rules ---
     adjusted_scores = []
     adjusted_max_scores = []
+    correct_counts = []
+    incorrect_counts = []
+    na_counts = []
 
     for _, row in df.iterrows():
         model_id = str(row['model_id'])
         if model_id not in solutions_per_model:
             adjusted_scores.append(0)
             adjusted_max_scores.append(max_score)
+            correct_counts.append(0)
+            incorrect_counts.append(0)
+            na_counts.append(0)
             continue
 
         model_solutions = solutions_per_model[model_id]
         student_score = 0
         student_max_score = 0
+        student_correct = 0
+        student_incorrect = 0
+        student_na = 0
         
         q_ids = sorted(model_solutions.keys())
 
@@ -304,6 +586,7 @@ def analyze_results(
                 if is_correct:
                     student_score += 1
                     student_max_score += 1
+                    student_correct += 1
                 # If incorrect, it doesn't count towards student's score or max score
             
             # Regular question
@@ -311,18 +594,27 @@ def analyze_results(
                 student_max_score += 1
                 if is_correct:
                     student_score += 1
-                elif is_answered and penalty > 0:
-                     student_score -= penalty
+                    student_correct += 1
+                elif is_answered:
+                    if penalty > 0:
+                         student_score -= penalty
+                    student_incorrect += 1
+                else:
+                    student_na += 1
         
         adjusted_scores.append(student_score)
         adjusted_max_scores.append(student_max_score)
+        correct_counts.append(student_correct)
+        incorrect_counts.append(student_incorrect)
+        na_counts.append(student_na)
 
     df['score_adjusted'] = adjusted_scores
     df['max_score_adjusted'] = adjusted_max_scores
+    df['correct_count'] = correct_counts
+    df['incorrect_count'] = incorrect_counts
+    df['na_count'] = na_counts
     
-    # --- Plot answer distribution before calculating final marks ---
-    if solutions_per_model:
-        _plot_answer_distribution(df, solutions_per_model, output_dir)
+    # (Old plotting function call removed here)
         
     df['mark'] = (df['score_adjusted'] / df['max_score_adjusted'].replace(0, 1)) * 10
     df['mark_clipped'] = np.clip(df['mark'], 0, 10)
@@ -333,7 +625,7 @@ def analyze_results(
     
     # --- Plotting ---
     plt.style.use('seaborn-v0_8-whitegrid')
-    fig, ax = plt.subplots(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(7, 4))
 
     df['mark_binned_for_plot'] = np.floor(df['mark_clipped'].fillna(0) + 0.5).astype(int)
     score_counts = Counter(df['mark_binned_for_plot'])
@@ -342,9 +634,9 @@ def analyze_results(
 
     plt.bar(all_possible_scores, frequencies, width=1.0, edgecolor='black', align='center', color='skyblue')
 
-    ax.set_title(f'Distribution of Exam Marks (Scaled to 0-10)', fontsize=15)
-    ax.set_xlabel('Mark (0-10 Scale)', fontsize=12)
-    ax.set_ylabel('Number of Students', fontsize=12)
+    ax.set_title(f'Distribution of Exam Marks (Scaled to 0-10)', fontsize=14, loc='left')
+    ax.set_xlabel('Mark (0-10 Scale)', fontsize=11)
+    ax.set_ylabel('Number of Students', fontsize=11)
     ax.set_xticks(np.arange(0, 11, 1))
     ax.set_xlim(-0.5, 10.5)
 
@@ -360,6 +652,7 @@ def analyze_results(
     ax.axvline(mean_mark, color='red', linestyle='dashed', linewidth=1.5, label=f'Mean: {mean_mark:.2f}')
     ax.axvline(median_mark, color='green', linestyle='dashed', linewidth=1.5, label=f'Median: {median_mark:.2f}')
     ax.legend()
+    plt.tight_layout()
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -367,16 +660,17 @@ def analyze_results(
 
     plot_filename = os.path.join(output_dir, "mark_distribution_0_10.png")
     try:
-        plt.savefig(plot_filename)
+        plt.savefig(plot_filename, dpi=300)
         logging.info(f"\nPlot saved to {os.path.abspath(plot_filename)}")
     except Exception as e:
         logging.error(f"Error saving plot: {e}")
+    plt.close(fig)
 
     # --- Print Student Marks ---
     print("\n--- Student Marks (0-10 Scale) ---")
     
-    results_to_print_df = df[['student_id', 'student_name', 'score_adjusted', 'max_score_adjusted', 'mark_clipped']].copy()
-    results_to_print_df.rename(columns={'mark_clipped': 'mark', 'score_adjusted': 'score', 'max_score_adjusted': 'max_score'}, inplace=True)
+    results_to_print_df = df[['student_id', 'student_name', 'score_adjusted', 'max_score_adjusted', 'correct_count', 'incorrect_count', 'na_count', 'mark_clipped']].copy()
+    results_to_print_df.rename(columns={'mark_clipped': 'mark', 'score_adjusted': 'score', 'max_score_adjusted': 'max_score', 'correct_count': 'correct', 'incorrect_count': 'incorrect', 'na_count': 'NA'}, inplace=True)
     
     # Save to a new CSV
     final_csv_path = os.path.join(output_dir, "final_marks.csv")
@@ -386,3 +680,7 @@ def analyze_results(
     # Print to console
     results_to_print_df.index = range(1, len(results_to_print_df) + 1)
     print(tabulate(results_to_print_df, headers='keys', tablefmt='psql', floatfmt=".2f"))
+
+    # --- Generate PDF Stats Report ---
+    if solutions_per_model:
+        _generate_stats_pdf(df, solutions_per_model, output_dir, mark_plot_path=plot_filename)

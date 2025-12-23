@@ -14,11 +14,13 @@ Below is an example of a simulated answer sheet and the annotated, corrected ver
 | :---: | :---: |
 | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/simulated_scan_model_1_1.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/WKAWA8P3.png" width="400"> |
 
-The analysis module also generates a plot showing the distribution of answers for each question, which helps in identifying problematic questions, as well as a plot showing the distribution of marks, which helps in assessing the fairness of the exam.
+The analysis module generates a detailed statistical report (PDF) including answer distributions and mark histograms.
 
-| Answer distribution | Marks distribution |
-| :---: | :---: |
-| <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution_0_10.png" width="400"> |
+<img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png" width="400"> <br>
+
+<img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution_0_10.png" width="400">
+
+
 
 ## Features
 
@@ -44,7 +46,13 @@ The analysis module also generates a plot showing the distribution of answers fo
 
 - **Automated correction**: Correct exams from a single PDF containing all scans or from a folder of individual images.
 - **Robust image processing**: Uses `OpenCV` with fiducial markers for reliable, automatic perspective correction and alignment, the `TrOCR` vision transformer model for OCR of the student ID, name, and model ID, and custom position detection for the answers.
-- **Detailed reports**: Generates a `correction_results.csv` file with detailed scores and answers for each student.
+- **Detailed reports**:
+  - `correction_results.csv`: Detailed scores and answers for each student.
+  - `question_stats.csv`: Answer distribution statistics and original question IDs.
+  - `stats_report.pdf`: A comprehensive, beautifully formatted PDF report containing:
+    - Summary statistics (Mean, Median, Pass Rate, etc.).
+    - Score distribution histogram.
+    - Detailed item analysis for each question with bar charts showing response distribution (correct / incorrect 1 / incorrect 2 / ... / blank).
 - **Insightful visualizations**: Automatically produces plots for:
   - **Mark distribution**: A histogram to assess overall student performance.
   - **Answer distribution**: A horizontal bar plot to analyze performance on each question and identify potential issues.
@@ -146,6 +154,8 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 
 **Common Options (for all formats):**
 - `--log-level <level>`: Set the logging level (DEBUG, INFO, WARNING, ERROR).
+- `--shuffle-questions <int>`: Seed for shuffling the order of questions (default: 42). If not set, questions keep their original order.
+- `--shuffle-answers <int>`: Seed for shuffling the order of answers/options (default: 42).
 
 **Options for `pexams` format:**
 - `--num-models <int>`: Number of different exam models to generate (default: 4).
@@ -221,7 +231,7 @@ pexams correct \
 
 **Scoring Arguments:**
 
-- `--penalty <float>`: Score penalty for wrong answers (e.g., `0.25`). Default is `0.0`. Formula: `score = correct_answers - (wrong_answers * penalty)`. Note that `wrong_answers` does not include blank/unanswered questions.
+- `--penalty <float>`: Score penalty for wrong answers (e.g., `0.33333`). Default is `0.0`. Formula: `score = correct_answers - (wrong_answers * penalty)`. Note that `wrong_answers` does not include blank/unanswered questions.
 
 **Other Arguments:**
 

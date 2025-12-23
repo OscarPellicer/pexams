@@ -113,6 +113,10 @@ def run_full_test(output_dir: str):
 
     # --- 3. Generate Exams & Fakes ---
     logging.info("--- Generating Exams and Fakes ---")
+    
+    # Initialize seeds for test
+    utils.set_seeds(seed_questions=None, seed_answers=42)
+    
     exam_output_dir = os.path.join(output_dir, "exam_output")
     generate_exams.generate_exams(
         questions=questions,
