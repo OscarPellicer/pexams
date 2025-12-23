@@ -12,6 +12,7 @@ class PexamQuestion(BaseModel):
     This schema is portable and can be used as the base for other systems.
     """
     id: Union[int, str]
+    original_id: Optional[Union[int, str]] = Field(None, description="The original ID from the source file, preserved across shuffling.")
     text: str
     options: List[PexamOption]
     image_source: Optional[str] = Field(None, description="Source for an image, can be a local path, a URL, or a base64 encoded string.")

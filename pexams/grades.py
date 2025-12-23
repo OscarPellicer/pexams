@@ -249,7 +249,7 @@ def fill_marks_in_file(input_file: str, id_col: str, mark_col: str, correction_r
                     # We might need to select specific columns or just print what we have
                     # We assume structure similar to analysis.py: student_id, student_name, score, max_score, mark
                     if 'score' in df_marks.columns and 'max_score' in df_marks.columns:
-                        cols_to_print = ['student_id', 'student_name', 'score', 'max_score', 'mark']
+                        cols_to_print = ['student_id', 'student_name', 'score', 'max_score', 'correct', 'incorrect', 'NA', 'mark']
                         # Ensure columns exist before filtering
                         cols_to_print = [c for c in cols_to_print if c in df_marks.columns]
                         results_to_print = df_marks[cols_to_print].copy()

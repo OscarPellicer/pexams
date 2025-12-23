@@ -21,9 +21,8 @@ What animal is shown in the image?
  * A fish
 
 ## 4
-Which of the following is NOT a primary color?
- * Green
- * Red
- * Blue
- * Yellow
-
+Consider the complex implications of color theory in modern digital interface design. When analyzing the impact of primary colors on user engagement and accessibility, particularly for individuals with color vision deficiencies (CVD), which of the following statements inaccurately describes the relationship between color choices and user perception, specifically regarding the color known as "Green" in the context of the RGB color model?
+ * It is a secondary color formed by mixing blue and yellow, which is a common misconception in additive color theory where it is actually a primary color used in screens.
+ * It is a primary color in the additive color system used by digital displays.
+ * It is often associated with "success" or "go" actions in UI design.
+ * It can be problematic for users with Deuteranopia if not paired with sufficient contrast.

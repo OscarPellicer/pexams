@@ -2,10 +2,62 @@ import glob
 import os
 import re
 import logging
+import random
 from pathlib import Path
-from typing import Dict, Any, Tuple
-from pexams.schemas import PexamExam
+from typing import Dict, Any, Tuple, List, Optional
+from pexams.schemas import PexamExam, PexamQuestion
 import Levenshtein
+
+# Global RNGs initialized with default seed 42
+_rng_questions = random.Random(42)
+_rng_answers = random.Random(42)
+
+def set_seeds(seed_questions: Optional[int] = None, seed_answers: int = 42):
+    """
+    Sets the global random seeds for question and answer shuffling.
+    
+    Args:
+        seed_questions: If None, questions will NOT be shuffled by shuffle_questions().
+                        If int, questions will be shuffled deterministically.
+        seed_answers: Must be an int (default 42). Used for shuffling answers.
+    """
+    global _rng_questions, _rng_answers
+    
+    if seed_questions is not None:
+        _rng_questions = random.Random(seed_questions)
+    else:
+        # If None, we don't really use this RNG for shuffling order, 
+        # but we keep a valid object just in case.
+        _rng_questions = None 
+
+    _rng_answers = random.Random(seed_answers)
+    logging.debug(f"Seeds set: Questions={seed_questions}, Answers={seed_answers}")
+
+def shuffle_questions_list(questions: List[PexamQuestion]) -> List[PexamQuestion]:
+    """
+    Shuffles the list of questions in-place (if a seed was provided) AND 
+    renumbers them sequentially (1..N), preserving the original ID in `original_id`.
+    
+    If seed_questions was None in set_seeds(), the order is preserved, 
+    but renumbering still happens.
+    """
+    if _rng_questions is not None:
+        _rng_questions.shuffle(questions)
+    
+    # Renumber
+    for i, q in enumerate(questions, 1):
+        if q.original_id is None:
+            q.original_id = q.id
+        q.id = i
+    
+    return questions
+
+def shuffle_options_for_question(question: PexamQuestion) -> None:
+    """
+    Shuffles the options of a single question in-place using the global answer seed.
+    """
+    if question.options:
+        _rng_answers.shuffle(question.options)
 
 def fuzzy_match_id(target_id: str, candidates: list[str], threshold: int = 80) -> str | None:
     """
