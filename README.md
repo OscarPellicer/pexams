@@ -16,9 +16,9 @@ Below is an example of a simulated answer sheet and the annotated, corrected ver
 
 The analysis module generates a detailed statistical report (PDF) including answer distributions and mark histograms.
 
-<img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png" width="400"> <br>
+![Answer Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png) 
 
-<img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution_0_10.png" width="400">
+![Mark Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution_0_10.png)
 
 
 
