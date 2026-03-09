@@ -45,6 +45,7 @@ The analysis module generates a detailed statistical report (PDF) including answ
 ### Correction & analysis
 
 - **Automated correction**: Correct exams from a single PDF containing all scans or from a folder of individual images.
+- **Online platform results**: Ingest student answers exported from **Wooclap** or **Moodle** (CSV or XLSX) with `pexams correct-online`, without needing any scanned sheets. Fuzzy question and answer matching ensures robustness against minor text differences.
 - **Robust image processing**: Uses `OpenCV` with fiducial markers for reliable, automatic perspective correction and alignment, the `TrOCR` vision transformer model for OCR of the student ID, name, and model ID, and custom position detection for the answers.
 - **Detailed reports**:
   - `correction_results.csv`: Detailed scores and answers for each student.
@@ -266,6 +267,82 @@ For best results with the automatic correction, please use the following setting
 -   **Color Mode**: **Grayscale** is highly recommended. **Do NOT use "Black and White" (1-bit / Threshold)** mode, as it destroys the details needed for accurate bubble detection and OCR. Color scans also work but produce larger files without significant benefit.
 -   **Format**: PDF (multi-page) or images (PNG/JPG).
 
+#### `pexams correct-online`
+
+Ingests student answers exported from an online platform (Wooclap or Moodle) and runs the same analysis and PDF report pipeline as `pexams correct`, without needing any scanned sheets.
+
+```bash
+pexams correct-online {wooclap,moodle} --input-file <questions.md> \
+    --results <results.xlsx> \
+    --output-dir <path> [OPTIONS]
+```
+
+**How matching works:**  
+For both platforms, answer text is matched to stored options via exact match first (case-insensitive), then Levenshtein fuzzy match as a fallback. A message is printed whenever fuzzy matching is used so you can verify mappings. For Wooclap, question column headers (`Q1 - <text> (N pts)`) are also matched to questions by text (exact then fuzzy).
+
+---
+
+##### `pexams correct-online wooclap`
+
+Parses a Wooclap "Export to Excel" results file. Column headers must follow the format `Q1 - <question text> (N pts)`. Answer cells are prefixed with `V - ` (correct chosen) or `X - ` (wrong chosen).
+
+```bash
+pexams correct-online wooclap \
+    --input-file my_questions.md \
+    --results wooclap_export.xlsx \
+    --output-dir ./results \
+    --fuzzy-threshold 80 \
+    --penalty 0.0
+```
+
+**Arguments:**
+
+- `--input-file <path>`: Questions file (`.md` or `.json`) used when exporting to Wooclap. **Required.**
+- `--results <path>`: Wooclap results CSV or XLSX. **Required.**
+- `--output-dir <path>`: Output directory. **Required.**
+- `--fuzzy-threshold <0–100>`: Minimum similarity for fuzzy question matching. Default: `80`.
+- `--penalty <float>`: Score penalty per wrong answer. Default: `0.0`.
+- `--encoding <str>`: File encoding. Default: auto-detect.
+- `--sep <str>`: CSV separator. Default: auto-detect.
+
+---
+
+##### `pexams correct-online moodle`
+
+Parses a Moodle quiz "Responses" CSV or XLSX export. Answer columns are detected by locale-flexible regex (`Resposta N`, `Respuesta N`, `Response N`, etc.) and mapped positionally to questions by default.
+
+```bash
+pexams correct-online moodle \
+    --input-file my_questions.md \
+    --results moodle_responses.csv \
+    --output-dir ./results \
+    --penalty 0.0
+```
+
+**Arguments:**
+
+- `--input-file <path>`: Questions file (`.md` or `.json`) used when exporting to Moodle. **Required.**
+- `--results <path>`: Moodle results CSV or XLSX. **Required.**
+- `--output-dir <path>`: Output directory. **Required.**
+- `--question-order <str>`: Comma-separated 1-based question indices that maps `Resposta 1` to `questions[index-1]`, etc. Default: sequential order.
+- `--penalty <float>`: Score penalty per wrong answer. Default: `0.0`.
+- `--encoding <str>`: File encoding. Default: auto-detect.
+- `--sep <str>`: CSV separator. Default: auto-detect.
+
+---
+
+**Output files (same as `pexams correct`):**
+
+| File | Description |
+|---|---|
+| `correction_results.csv` | Per-student answer matrix |
+| `question_stats.csv` | Per-question per-option answer counts |
+| `final_marks.csv` | Student marks on a 0–10 scale |
+| `mark_distribution_0_10.png` | Score histogram |
+| `stats_report.pdf` | Full PDF report with per-question answer distribution |
+
+---
+
 #### `pexams test`
 
 Runs a full generate/correct/analyze cycle using bundled sample data, and tests exports and fuzzy matching.
@@ -340,6 +417,51 @@ analysis.analyze_results(
     csv_filepath="./correction_output/correction_results.csv",
     exam_dir="./my_exams", # Automatically loads solutions
     output_dir="./correction_output"
+)
+```
+
+### 4. Ingesting Online Platform Results (Wooclap / Moodle)
+
+For online quizzes you can parse the platform export directly — no scanned sheets needed.
+Use `create_solutions_from_questions` to build the solutions structure from the question list
+instead of loading `exam_model_*_questions.json` files from disk.
+
+```python
+from pexams import analysis, utils
+from pexams.io.loader import load_and_prepare_questions
+from pexams.io.online_results import parse_wooclap_results, parse_moodle_results
+
+# Load the same questions file you used when exporting to Wooclap / Moodle
+questions = load_and_prepare_questions("my_questions.md")
+
+# Build the solutions structures (no JSON files required)
+solutions_full, solutions_simple, max_score = utils.create_solutions_from_questions(questions)
+
+# --- Wooclap ---
+results_df = parse_wooclap_results(
+    results_path="wooclap_export.xlsx",
+    questions=questions,
+    fuzzy_threshold=0.80,   # 0–1 ratio; a message is printed for fuzzy matches
+)
+
+# --- Moodle ---
+# results_df = parse_moodle_results(
+#     results_path="moodle_responses.csv",
+#     questions=questions,
+# )
+
+import os
+os.makedirs("./online_results", exist_ok=True)
+
+# Save in the standard correction_results.csv format
+results_df.to_csv("./online_results/correction_results.csv", index=False)
+
+# Run the full analysis & PDF report pipeline
+analysis.analyze_results(
+    csv_filepath="./online_results/correction_results.csv",
+    max_score=max_score,
+    output_dir="./online_results",
+    solutions_per_model=solutions_full,
 )
 ```
 
