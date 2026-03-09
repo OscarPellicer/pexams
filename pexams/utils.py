@@ -87,6 +87,38 @@ def fuzzy_match_id(target_id: str, candidates: list[str], threshold: int = 80) -
             
     return best_match
 
+def create_solutions_from_questions(
+    questions: List[PexamQuestion],
+    model_id: str = "1",
+) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], int]:
+    """Build the *solutions_per_model* structures expected by
+    :func:`pexams.analysis.analyze_results` directly from a list of questions,
+    without requiring any ``exam_model_*_questions.json`` files on disk.
+
+    This is the counterpart of :func:`load_solutions` for online platforms
+    (Wooclap, Moodle) where there is a single exam model and no scanned sheets.
+
+    Args:
+        questions: List of :class:`~pexams.schemas.PexamQuestion` objects.
+            Must have sequential integer IDs (1, 2, …).
+        model_id: Model identifier to use (default ``"1"``).
+
+    Returns:
+        A 3-tuple ``(solutions_full, solutions_simple, max_score)`` with the
+        same structure as :func:`load_solutions`.
+    """
+    solutions_full = {model_id: {q.id: q.model_dump() for q in questions}}
+    solutions_simple = {
+        model_id: {
+            q.id: q.correct_answer_index
+            for q in questions
+            if q.correct_answer_index is not None
+        }
+    }
+    max_score = len(solutions_simple[model_id])
+    return solutions_full, solutions_simple, max_score
+
+
 def load_solutions(exam_dir: str) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], int]:
     """
     Loads solutions from exam_model_*_questions.json files in the given directory.

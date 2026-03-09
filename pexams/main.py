@@ -17,7 +17,45 @@ from pexams import utils
 from pexams.io import md_converter, rexams_converter, wooclap_converter, gift_converter, moodle_xml_converter
 from pexams.io.loader import load_and_prepare_questions
 from pexams.grades import fill_marks_in_file
-from pexams.cli_tests import test_overflow, run_full_test
+
+
+def _find_tests_dir():
+    """Locate the tests/ directory whether running from project root or installed."""
+    candidate = os.path.join(os.getcwd(), "tests")
+    if os.path.isdir(candidate):
+        return candidate
+    candidate = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tests")
+    if os.path.isdir(candidate):
+        return candidate
+    return None
+
+
+def _run_pytest(output_dir, k_filter=None):
+    try:
+        import pytest
+    except ImportError:
+        logging.error("pytest is required to run tests. Install it with: pip install pytest")
+        return
+
+    tests_dir = _find_tests_dir()
+    if tests_dir is None:
+        logging.error(
+            "Could not find the tests/ directory. "
+            "Run pexams from the project root, or install the package in editable mode."
+        )
+        return
+
+    pytest_args = [tests_dir, "-v", f"--output-dir={output_dir}"]
+    if k_filter:
+        pytest_args += ["-k", k_filter]
+
+    # Shut down any logging handlers set up by the CLI before handing off to
+    # pytest, which will reinitialise its own I/O.  Without this the parent
+    # process's stream handles become stale inside pytest's captured output
+    # context, producing a flood of OSError: [WinError 6] messages.
+    logging.shutdown()
+    sys.exit(pytest.main(pytest_args))
+
 
 def main():
     """Main CLI entry point for the pexams library."""
@@ -103,6 +141,74 @@ def main():
     generate_parser.add_argument("--custom-header", type=str, default=None, help="Markdown string or path to .md file to insert before questions.")
     generate_parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set the logging level.")
     
+    # --- Correct-Online Command ---
+    correct_online_parser = subparsers.add_parser(
+        "correct-online",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Ingest results from online platforms (Wooclap, Moodle) and generate a statistics report.",
+    )
+    correct_online_sub = correct_online_parser.add_subparsers(
+        dest="platform", required=True, help="The platform from which results were exported."
+    )
+
+    # Shared arguments for all online-correction sub-subparsers
+    _online_common = argparse.ArgumentParser(add_help=False)
+    _online_common.add_argument(
+        "--input-file", required=True,
+        help="Path to the questions file (.md or .json) used when exporting to this platform.",
+    )
+    _online_common.add_argument(
+        "--results", required=True,
+        help="Path to the results file exported from the platform (CSV or XLSX).",
+    )
+    _online_common.add_argument(
+        "--output-dir", required=True,
+        help="Directory where correction_results.csv and stats_report.pdf will be saved.",
+    )
+    _online_common.add_argument(
+        "--penalty", type=float, default=0.0,
+        help="Score penalty deducted per wrong answer (default: 0.0).",
+    )
+    _online_common.add_argument(
+        "--encoding", default="auto",
+        help="Encoding of the results file, e.g. 'utf-8', 'latin1'. Default: auto-detect.",
+    )
+    _online_common.add_argument(
+        "--sep", default="auto",
+        help="CSV separator, e.g. ',' or ';'. Default: auto-detect.",
+    )
+    _online_common.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity.",
+    )
+
+    # Wooclap sub-subparser
+    wo_parser = correct_online_sub.add_parser(
+        "wooclap", parents=[_online_common],
+        help="Ingest Wooclap results (CSV/XLSX exported from 'Export to Excel').",
+    )
+    wo_parser.add_argument(
+        "--fuzzy-threshold", type=int, default=80,
+        help=(
+            "Minimum similarity score (0–100) for fuzzy matching of question "
+            "texts in column headers. Default: 80."
+        ),
+    )
+
+    # Moodle sub-subparser
+    mo_parser = correct_online_sub.add_parser(
+        "moodle", parents=[_online_common],
+        help="Ingest Moodle quiz results (CSV/XLSX downloaded from Results > Responses).",
+    )
+    mo_parser.add_argument(
+        "--question-order", default=None,
+        help=(
+            "Comma-separated list of 1-based question indices that maps "
+            "'Resposta 1' to questions[index-1], etc. "
+            "Default: sequential order (1,2,3,...)."
+        ),
+    )
+
     args = parser.parse_args()
     
     # Configure logging
@@ -110,10 +216,10 @@ def main():
     logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
     if args.command == "test":
-        run_full_test(args.output_dir)
+        _run_pytest(args.output_dir, k_filter="not overflow")
 
     elif args.command == "test-overflow":
-        test_overflow(args.output_dir)
+        _run_pytest(args.output_dir, k_filter="overflow")
 
     elif args.command == "correct":
         if args.penalty < 0:
@@ -256,6 +362,55 @@ def main():
                 moodle_xml_converter.convert_to_moodle_xml(questions, moodle_file)
             else:
                 logging.error(f"Unknown output format: {output_fmt}. Supported formats: pexams, rexams, wooclap, gift, md, moodle.")
+
+    elif args.command == "correct-online":
+        from pexams.io.online_results import parse_wooclap_results, parse_moodle_results
+
+        questions = load_and_prepare_questions(args.input_file)
+        if questions is None:
+            return
+
+        solutions_full, solutions_simple, max_score = utils.create_solutions_from_questions(questions)
+
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        if args.platform == "wooclap":
+            results_df = parse_wooclap_results(
+                results_path=args.results,
+                questions=questions,
+                fuzzy_threshold=args.fuzzy_threshold / 100.0,
+                encoding=args.encoding,
+                sep=args.sep,
+            )
+        elif args.platform == "moodle":
+            question_order = None
+            if args.question_order:
+                question_order = [int(x.strip()) - 1 for x in args.question_order.split(",")]
+            results_df = parse_moodle_results(
+                results_path=args.results,
+                questions=questions,
+                question_order=question_order,
+                encoding=args.encoding,
+                sep=args.sep,
+            )
+        else:
+            logging.error("Unknown platform: %s", args.platform)
+            return
+
+        # Save correction_results.csv in the standard pexams format
+        correction_csv = os.path.join(args.output_dir, "correction_results.csv")
+        results_df.to_csv(correction_csv, index=False)
+        print(f"Correction results saved to: {correction_csv}")
+
+        # Run the standard pexams analysis + PDF report
+        analysis.analyze_results(
+            csv_filepath=correction_csv,
+            max_score=max_score,
+            output_dir=args.output_dir,
+            solutions_per_model=solutions_full,
+            penalty=args.penalty,
+        )
+
 
 if __name__ == "__main__":
     main()
