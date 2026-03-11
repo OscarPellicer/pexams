@@ -34,7 +34,8 @@ dependencies = [
     "pymdown-extensions",
     "python-Levenshtein",
     "pypdf",
-    "openpyxl"
+    "openpyxl",
+    "pytest"
 ]
 
 [project.scripts]

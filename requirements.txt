@@ -16,3 +16,5 @@ timm
 pymdown-extensions
 python-Levenshtein
 pypdf
+openpyxl
+pytest
