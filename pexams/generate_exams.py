@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import List, Optional, Union
 import random
 import os
@@ -15,6 +16,50 @@ from pexams.schemas import PexamQuestion, PexamExam
 from pexams import layout
 from pexams import utils
 from pexams.translations import LANG_STRINGS
+
+
+def _is_relative_media_path(src: str) -> bool:
+    """True if src should be resolved against a base directory (not http(s), file:, data:, or absolute)."""
+    s = src.strip()
+    if not s or s.startswith("#"):
+        return False
+    low = s.lower()
+    if low.startswith(("http://", "https://", "data:", "file:")):
+        return False
+    if s.startswith("//"):
+        return False
+    try:
+        return not Path(s).is_absolute()
+    except Exception:
+        return True
+
+
+def _resolve_relative_media_uris(html: str, base_dir: str) -> str:
+    """
+    Rewrite relative img/video/audio src attributes to file:// URIs.
+
+    When the exam HTML is opened via file:///.../exam_model_1.html, relative paths are
+    resolved against the HTML file's directory, not the source markdown folder — so
+    ![](fig.png) beside the .md file must become an absolute file URI.
+    """
+    if not html or not base_dir:
+        return html
+    base_dir = os.path.abspath(base_dir)
+
+    def repl(match) -> str:
+        quote = match.group(1)
+        path = match.group(2)
+        if not _is_relative_media_path(path):
+            return match.group(0)
+        abs_path = os.path.normpath(os.path.join(base_dir, path))
+        try:
+            uri = Path(abs_path).as_uri()
+        except ValueError:
+            return match.group(0)
+        return f"src={quote}{uri}{quote}"
+
+    return re.sub(r"\bsrc=(['\"])([^'\"]+)\1", repl, html, flags=re.IGNORECASE)
+
 
 def _generate_answer_sheet_html(
     questions: List[PexamQuestion],
@@ -255,11 +300,16 @@ def generate_exams(
     generate_references: bool = False,
     total_students: int = 0,
     extra_model_templates: int = 0,
-    custom_header: Optional[Union[str, Path]] = None
+    custom_header: Optional[Union[str, Path]] = None,
+    markdown_asset_base_dir: Optional[str] = None,
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
     The questions can be provided as a list of PexamQuestion objects or a path to a JSON file.
+
+    markdown_asset_base_dir: Directory used to resolve relative paths in markdown images
+    (e.g. ``![](fig.png)``) and similar ``src`` attributes to file:// URIs for PDF rendering.
+    Typically the directory containing the source ``.md`` file.
     """
     logging.info(f"Starting pexams PDF generation.")
     
@@ -329,7 +379,14 @@ def generate_exams(
         }
         custom_header_html = markdown.markdown(str(header_content), extensions=extensions, extension_configs=extension_configs)
         custom_header_html = f'<div class="custom-header">{custom_header_html}</div>'
-        
+        header_resolve_base = None
+        if str(custom_header).strip().lower().endswith(".md") and os.path.exists(str(custom_header)):
+            header_resolve_base = os.path.dirname(os.path.abspath(str(custom_header)))
+        elif markdown_asset_base_dir:
+            header_resolve_base = markdown_asset_base_dir
+        if header_resolve_base:
+            custom_header_html = _resolve_relative_media_uris(custom_header_html, header_resolve_base)
+
     # We work on a copy to avoid mutating the original list if it's reused
     questions_shuffled = list(questions_list)
     utils.shuffle_questions_list(questions_shuffled)
@@ -375,7 +432,9 @@ def generate_exams(
         )
         questions_md = _generate_questions_markdown(model_questions)
         questions_html = markdown.markdown(questions_md)
-        
+        if markdown_asset_base_dir:
+            questions_html = _resolve_relative_media_uris(questions_html, markdown_asset_base_dir)
+
         final_html_content = f"""
 <!DOCTYPE html>
 <html>

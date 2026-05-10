@@ -333,7 +333,8 @@ def main():
                 generate_references=args.generate_references,
                 total_students=args.total_students,
                 extra_model_templates=args.extra_model_templates,
-                custom_header=args.custom_header
+                custom_header=args.custom_header,
+                markdown_asset_base_dir=os.path.dirname(os.path.abspath(args.input_file)),
             )
         else:
             # For non-pexams formats, we apply the shuffling here before passing to converter.

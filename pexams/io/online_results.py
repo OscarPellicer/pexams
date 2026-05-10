@@ -359,7 +359,17 @@ def parse_wooclap_results(
     for page_idx, (_, srow) in enumerate(df.iterrows(), start=1):
         # Skip summary/percentage rows that Wooclap sometimes appends
         first_cell = str(srow.iloc[0]).strip() if len(srow) > 0 else ""
+        second_cell = str(srow.iloc[1]).strip() if len(srow) > 1 else ""
+        
+        is_summary = False
         if re.match(r"^\d+\.?\d*\s*%$", first_cell):
+            is_summary = True
+        
+        for cell_val in (first_cell, second_cell):
+            if cell_val.lower() in ("media", "average", "moyenne", "promedio"):
+                is_summary = True
+                
+        if is_summary:
             continue
 
         student_id = (
