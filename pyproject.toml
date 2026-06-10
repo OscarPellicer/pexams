@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pexams"
-version = "0.11.0"
+version = "0.12.0"
 description = "A Python library for generating and correcting exams using Playwright and OpenCV."
 authors = [
     { name = "Oscar J. Pellicer-Valero" },
@@ -35,7 +35,13 @@ dependencies = [
     "python-Levenshtein",
     "pypdf",
     "openpyxl",
-    "pytest"
+    "pytest",
+    "python-dotenv",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "llm: tests that call a real LLM provider and may burn API credits",
 ]
 
 [project.scripts]
