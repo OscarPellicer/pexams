@@ -90,7 +90,7 @@ def fuzzy_match_id(target_id: str, candidates: list[str], threshold: int = 80) -
 def create_solutions_from_questions(
     questions: List[PexamQuestion],
     model_id: str = "1",
-) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], int]:
+) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], float]:
     """Build the *solutions_per_model* structures expected by
     :func:`pexams.analysis.analyze_results` directly from a list of questions,
     without requiring any ``exam_model_*_questions.json`` files on disk.
@@ -107,19 +107,24 @@ def create_solutions_from_questions(
         A 3-tuple ``(solutions_full, solutions_simple, max_score)`` with the
         same structure as :func:`load_solutions`.
     """
-    solutions_full = {model_id: {q.id: q.model_dump() for q in questions}}
+    multiple_choice_questions = [q for q in questions if q.is_multiple_choice]
+    skipped = len(questions) - len(multiple_choice_questions)
+    if skipped:
+        logging.warning("Skipping %d open-answer question(s) in multiple-choice solution data.", skipped)
+
+    solutions_full = {model_id: {q.id: q.model_dump() for q in multiple_choice_questions}}
     solutions_simple = {
         model_id: {
             q.id: q.correct_answer_index
-            for q in questions
+            for q in multiple_choice_questions
             if q.correct_answer_index is not None
         }
     }
-    max_score = len(solutions_simple[model_id])
+    max_score = sum(float(q.points) for q in multiple_choice_questions if q.correct_answer_index is not None)
     return solutions_full, solutions_simple, max_score
 
 
-def load_solutions(exam_dir: str) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], int]:
+def load_solutions(exam_dir: str) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, Dict[int, int]], float]:
     """
     Loads solutions from exam_model_*_questions.json files in the given directory.
     Returns:
@@ -129,7 +134,7 @@ def load_solutions(exam_dir: str) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, 
     """
     solutions_per_model = {}
     solutions_per_model_simple = {}
-    max_score = 0
+    max_score = 0.0
     
     solution_files = glob.glob(os.path.join(exam_dir, "exam_model_*_questions.json"))
     if not solution_files:
@@ -143,15 +148,25 @@ def load_solutions(exam_dir: str) -> Tuple[Dict[str, Dict[int, Any]], Dict[str, 
                 model_id = model_id_match.group(1)
                 exam = PexamExam.model_validate_json(Path(sol_file).read_text(encoding="utf-8"))
                 
+                multiple_choice_questions = [q for q in exam.questions if q.is_multiple_choice]
+                skipped = len(exam.questions) - len(multiple_choice_questions)
+                if skipped:
+                    logging.warning(
+                        "Skipping %d open-answer question(s) in multiple-choice solutions for model %s.",
+                        skipped,
+                        model_id,
+                    )
+
                 # Store full question data for analysis
-                solutions_per_model[model_id] = {q.id: q.model_dump() for q in exam.questions}
+                solutions_per_model[model_id] = {q.id: q.model_dump() for q in multiple_choice_questions}
                 
                 # Store only indices for the correction module
-                solutions_simple = {q.id: q.correct_answer_index for q in exam.questions if q.correct_answer_index is not None}
+                solutions_simple = {q.id: q.correct_answer_index for q in multiple_choice_questions if q.correct_answer_index is not None}
                 solutions_per_model_simple[model_id] = solutions_simple
 
-                if len(solutions_simple) > max_score:
-                    max_score = len(solutions_simple)
+                model_max_score = sum(float(q.points) for q in multiple_choice_questions if q.correct_answer_index is not None)
+                if model_max_score > max_score:
+                    max_score = model_max_score
         except Exception as e:
             logging.error(f"Failed to load solution file {sol_file}: {e}")
             

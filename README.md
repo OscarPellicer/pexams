@@ -136,6 +136,30 @@ Optional explanation text...
 - The **first answer** in the list is treated as the correct one (it will be shuffled during exam generation).
 - Images must be in a blockquote `> ![...]`.
 - Question ID can be a string or integer.
+- Per-question points can be set in the header with `{points=2.5}`.
+- Per-question font size can be set with `{font_size=8pt}`.
+
+### Mixed exams with open-answer questions
+
+Open-answer questions are declared in the question header. The `lines` value reserves vertical space; guide lines are hidden by default and can be enabled per question with `show_lines=true`.
+
+```markdown
+## mc_1 {points=2 font_size=9pt}
+What is the main purpose of regularization?
+* To reduce overfitting
+* To increase the number of parameters
+
+## open_1 {type=open points=4 lines=10 show_lines=false font_size=10pt}
+Explain why regularization can improve generalization.
+
+**Expected answer:**
+Regularization discourages overly complex models and can reduce overfitting.
+
+**Rubric:**
+2 points for model complexity, 1 for overfitting/generalization, 1 for train/validation contrast.
+```
+
+When correcting scans, `pexams` writes `open_responses_index.csv` and cropped open-answer images under `open_responses/`. These artifacts are intended for `pevaluate exam-open`.
 
 ### 2. CLI commands
 
@@ -172,6 +196,7 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 - `--generate-fakes <int>`: Generates a number of simulated scans with fake answers for testing the correction process (default: 0).
 - `--generate-references`: If set, generates a reference scan with the correct answers marked for each model.
 - `--custom-header <str>`: Markdown string or path to a Markdown file to insert before the questions (e.g., instructions).
+- `--mc-total-points <float>`: Assign a total value to all multiple-choice questions and distribute it evenly. Do not combine this with per-question non-default MC points.
 
 ### Comprehensive Example
 
@@ -224,6 +249,9 @@ pexams correct \
 - `--id-column <name>`: Column name in input file containing student IDs.
 - `--mark-column <name>`: Column name to fill with marks (will be created if missing).
 - `--fuzzy-id-match <0-100>`: Threshold for fuzzy matching of IDs (default 100 = exact match only).
+- `--name-match-threshold <0-100>`: When `--input-csv` and `--name-column` are provided, scanned exams are matched to the roster by OCR'd student name before analysis. If any scan cannot be matched, `pexams` writes `student_matches.csv` and stops before producing named artifacts or reports.
+- `--use-llm-name-ocr`: Use OpenRouter vision OCR for the student-name box before roster matching. By default, local OCR is used.
+- `--openrouter-name-model <model>`: Model used by `--use-llm-name-ocr` (default `google/gemini-3-flash-preview`).
 - `--input-encoding <str>`: Encoding of the input CSV file (default `utf-8`). Useful if you encounter encoding errors, in which case you can try `latin1` or `utf-8-sig`.
 - `--input-sep <str>`: Separator for the input CSV file (default `,`). If your CSV uses semicolons (common in Europe), pass `--input-sep semi` or `--input-sep ";"`.
 - `--output-decimal-sep <str>`: Decimal separator for the output marks (default `.`). Use `,` if your locale requires comma decimals (e.g., `--output-decimal-sep ","`).
@@ -258,6 +286,75 @@ pexams correct \
 ```
 
 This will re-read the corrected CSV, recalculate all scores (applying penalties, void questions, etc.), regenerate the plots, and update the final marks.
+
+#### `pexams moodle-feedback-zip`
+
+Creates a Moodle Assignment feedback-file ZIP from the corrected scans in `scanned_pages/` plus the marks in `final_marks.csv`.
+Upload the resulting ZIP in Moodle with **Upload multiple feedback files in a zip** / **Penja múltiples fitxers de retroacció en un zip**.
+
+```bash
+pexams moodle-feedback-zip \
+    --moodle-csv "./Qualificacions-assignacio.csv" \
+    --correction-dir ./generated_exam/correction_results \
+    --feedback-mode zip \
+    --output-zip ./generated_exam/moodle_feedback.zip
+```
+
+By default, ZIP mode generates one PDF feedback file per matched student. Pass `--feedback-file-format png` if you prefer the older PNG files.
+
+You can also try an experimental CSV workflow that embeds the same PNG as a base64 `data:image/png` inside the Moodle feedback-comments column:
+
+```bash
+pexams moodle-feedback-zip \
+    --moodle-csv "./Qualificacions-assignacio.csv" \
+    --correction-dir ./generated_exam/correction_results \
+    --feedback-mode csv \
+    --output-csv ./generated_exam/moodle_feedback_base64.csv
+```
+
+Or generate both candidates at once:
+
+```bash
+pexams moodle-feedback-zip \
+    --moodle-csv "./Qualificacions-assignacio.csv" \
+    --correction-dir ./generated_exam/correction_results \
+    --feedback-mode both \
+    --output-zip ./generated_exam/moodle_feedback.zip \
+    --output-csv ./generated_exam/moodle_feedback_base64.csv
+```
+
+The Moodle grading-table export is used to map students to Moodle's internal participant identifiers. `pexams` accepts explicit column names and also resolves common Catalan, Spanish, and English Moodle headers automatically. In Catalan Moodle exports, the usual columns are:
+
+- `--participant-column "Identificador"`: values like `Participant12744381`; pexams extracts the numeric id.
+- `--id-column "Número ID"`: the real student ID, matched against `final_marks.csv`.
+- `--name-column "Nom complet"`: shown in the generated feedback filename/header.
+
+The ZIP entries are named like:
+
+```text
+Full Name_12744381_assignfeedback_file_pexams_feedback_STUDENTID.pdf
+```
+
+That filename pattern is what Moodle's assignment feedback-file importer expects: it extracts the numeric participant id and the `assignfeedback_file` plugin name from the path. The command also writes `<output>_manifest.csv` so you can inspect which students were added, unmatched, or missing an image before uploading.
+
+**Important:** this Moodle action uploads feedback files only. Grades still need to be uploaded through Moodle's grading worksheet or filled/imported separately, unless your Moodle workflow combines those steps.
+
+**Experimental CSV note:** the base64 CSV mode writes HTML into `Comentaris de retroacció.` and fills `Qualificació` by default. Some Moodle sites strip `data:` image URLs from comments for security, so treat this as a trial path. If Moodle removes the image or rejects the CSV, use the ZIP mode for feedback files and the grading worksheet for marks.
+
+**Arguments:**
+
+- `--moodle-csv <path>`: CSV/XLSX exported from the Moodle assignment grading table. **Required.**
+- `--correction-dir <path>`: Directory containing `final_marks.csv` and `scanned_pages/`. **Required.**
+- `--feedback-mode <zip|csv|both>`: Which output(s) to create. Default: `zip`.
+- `--output-zip <path>`: ZIP file to create. Required for `zip` and `both`.
+- `--output-csv <path>`: CSV file to create for base64 mode. Default: `<correction-dir>/moodle_feedback_base64.csv`.
+- `--feedback-file-format <pdf|png>`: File type inside the ZIP. Default: `pdf`.
+- `--images-dir <path>`: Override the annotated images directory. Default: `<correction-dir>/scanned_pages`.
+- `--marks-csv <path>`: Override the marks CSV. Default: `<correction-dir>/final_marks.csv`.
+- `--feedback-column <name>`: Feedback comments column for CSV mode. Default: `Comentaris de retroacció.`.
+- `--grade-column <name>`: Grade column for CSV mode. Default: `Qualificació`; pass `--grade-column ""` to skip grade filling.
+- `--moodle-sep <str>` and `--moodle-encoding <str>`: CSV separator and encoding. Use `--moodle-sep semi` for semicolon CSVs.
+- `--overwrite`: Replace an existing output ZIP.
 
 ### Recommended Scan Settings
 

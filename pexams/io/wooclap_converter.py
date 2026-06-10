@@ -93,6 +93,10 @@ def convert_to_wooclap(questions: List[PexamQuestion], output_file: str):
     questions_with_images_skipped = 0
 
     for q in questions:
+        if q.is_open_answer:
+            logging.warning("Skipping open-answer question %s: Wooclap export currently supports multiple choice only.", q.id)
+            continue
+
         if q.image_source:
             logging.warning(f"Skipping question {q.id} because Wooclap does not support images.")
             questions_with_images_skipped += 1

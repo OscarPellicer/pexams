@@ -17,6 +17,7 @@ from pexams import utils
 from pexams.io import md_converter, rexams_converter, wooclap_converter, gift_converter, moodle_xml_converter
 from pexams.io.loader import load_and_prepare_questions
 from pexams.grades import fill_marks_in_file
+from pexams.feedback_zip import create_moodle_feedback_csv, create_moodle_feedback_zip
 
 
 def _find_tests_dir():
@@ -92,6 +93,12 @@ def main():
         help="If set, the output CSV will only contain the id, name, and mark columns.")
     correct_parser.add_argument( "--fuzzy-id-match", type=int, default=100,
         help="Fuzzy matching threshold (0-100) for student IDs.")
+    correct_parser.add_argument( "--name-match-threshold", type=float, default=70.0,
+        help="Fuzzy matching threshold (0-100) for matching OCR student names to --input-csv before analysis.")
+    correct_parser.add_argument( "--use-llm-name-ocr", action="store_true",
+        help="Use OpenRouter vision OCR for student names before roster matching. Default: local OCR only.")
+    correct_parser.add_argument( "--openrouter-name-model", type=str, default="google/gemini-3-flash-preview",
+        help="OpenRouter vision model for --use-llm-name-ocr. Default: google/gemini-3-flash-preview.")
     correct_parser.add_argument( "--penalty", type=float, default=0.0,
         help="Score penalty for wrong answers (positive float, e.g. 0.33333). Default is 0.0.")
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",
@@ -139,6 +146,7 @@ def main():
     generate_parser.add_argument("--generate-fakes", type=int, default=0, help="Generate simulated scans (pexams only).")
     generate_parser.add_argument("--generate-references", action="store_true", help="Generate reference scan (pexams only).")
     generate_parser.add_argument("--custom-header", type=str, default=None, help="Markdown string or path to .md file to insert before questions.")
+    generate_parser.add_argument("--mc-total-points", type=float, default=None, help="Total points assigned to all multiple-choice questions. Cannot be combined with per-question non-default MC points.")
     generate_parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set the logging level.")
     
     # --- Correct-Online Command ---
@@ -209,6 +217,97 @@ def main():
         ),
     )
 
+    # --- Moodle Feedback Zip Command ---
+    feedback_zip_parser = subparsers.add_parser(
+        "moodle-feedback-zip",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Create a Moodle assignment feedback-files zip from corrected pexams scans and final marks.",
+    )
+    feedback_zip_parser.add_argument(
+        "--moodle-csv", required=True,
+        help="CSV/XLSX exported from the Moodle assignment grading table.",
+    )
+    feedback_zip_parser.add_argument(
+        "--correction-dir", required=True,
+        help="Directory containing final_marks.csv and scanned_pages/ from 'pexams correct'.",
+    )
+    feedback_zip_parser.add_argument(
+        "--output-zip",
+        help="Path of the Moodle feedback zip to create. Required for --feedback-mode zip/both.",
+    )
+    feedback_zip_parser.add_argument(
+        "--output-csv",
+        help="Path of the experimental Moodle feedback CSV to create. Default: <correction-dir>/moodle_feedback_base64.csv.",
+    )
+    feedback_zip_parser.add_argument(
+        "--feedback-mode", default="zip", choices=["zip", "csv", "both"],
+        help="Output mode: feedback-file zip, experimental base64 feedback CSV, or both. Default: zip.",
+    )
+    feedback_zip_parser.add_argument(
+        "--id-column", default="Número ID",
+        help="Student ID column in the Moodle export (default: 'Número ID').",
+    )
+    feedback_zip_parser.add_argument(
+        "--participant-column", default="Identificador",
+        help="Moodle participant identifier column (default: 'Identificador').",
+    )
+    feedback_zip_parser.add_argument(
+        "--name-column", default="Nom complet",
+        help="Student name column in the Moodle export (default: 'Nom complet').",
+    )
+    feedback_zip_parser.add_argument(
+        "--mark-column", default="mark",
+        help="Mark column in final_marks.csv (default: 'mark').",
+    )
+    feedback_zip_parser.add_argument(
+        "--feedback-column", default="Comentaris de retroacció.",
+        help="Feedback comments column for CSV mode (default: 'Comentaris de retroacció.').",
+    )
+    feedback_zip_parser.add_argument(
+        "--grade-column", default="Qualificació",
+        help="Grade column to fill in CSV mode. Pass an empty string to skip grade filling.",
+    )
+    feedback_zip_parser.add_argument(
+        "--image-id-column", default="student_id",
+        help="Student ID column in final_marks.csv and scanned_pages filenames (default: 'student_id').",
+    )
+    feedback_zip_parser.add_argument(
+        "--images-dir", default=None,
+        help="Directory with annotated PNG/JPG files. Default: <correction-dir>/scanned_pages.",
+    )
+    feedback_zip_parser.add_argument(
+        "--marks-csv", default=None,
+        help="Marks CSV to use. Default: <correction-dir>/final_marks.csv.",
+    )
+    feedback_zip_parser.add_argument(
+        "--moodle-encoding", default="utf-8",
+        help="Encoding of the Moodle CSV (default: utf-8).",
+    )
+    feedback_zip_parser.add_argument(
+        "--moodle-sep", default=",",
+        help="Separator for the Moodle CSV (default: comma). Use 'semi' for ';'.",
+    )
+    feedback_zip_parser.add_argument(
+        "--max-mark", default="10",
+        help="Text shown after the mark in the generated feedback header (default: 10).",
+    )
+    feedback_zip_parser.add_argument(
+        "--feedback-file-format", default="pdf", choices=["pdf", "png"],
+        help="File format to put inside the Moodle feedback ZIP. Default: pdf.",
+    )
+    feedback_zip_parser.add_argument(
+        "--csv-decimal-sep", default=",",
+        help="Decimal separator for marks written to the CSV grade column (default: comma).",
+    )
+    feedback_zip_parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Replace the output zip if it already exists.",
+    )
+    feedback_zip_parser.add_argument(
+        "--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set the logging level.",
+    )
+
     args = parser.parse_args()
     
     # Configure logging
@@ -247,6 +346,11 @@ def main():
             return
 
         os.makedirs(args.output_dir, exist_ok=True)
+        input_sep =  ';' if args.input_sep == 'semi' else \
+                     ',' if args.input_sep == 'comma' else \
+                     '\t' if args.input_sep == 'tab' else \
+                     '|' if args.input_sep == 'pipe' else \
+                     args.input_sep
         
         if args.only_analysis:
              logging.info("Skipping image correction (--only-analysis). Using existing results.")
@@ -256,7 +360,15 @@ def main():
                 input_path=args.input_path,
                 solutions_per_model=solutions_simple,
                 output_dir=args.output_dir,
-                questions_dir=args.exam_dir
+                questions_dir=args.exam_dir,
+                roster_csv=args.input_csv,
+                roster_id_column=args.id_column,
+                roster_name_column=args.name_column,
+                roster_encoding=args.input_encoding,
+                roster_sep=input_sep,
+                name_match_threshold=args.name_match_threshold,
+                use_llm_name_ocr=args.use_llm_name_ocr,
+                openrouter_name_model=args.openrouter_name_model,
             )
         
         if correction_success:
@@ -276,14 +388,9 @@ def main():
                 # Input CSV Filling
                 if args.input_csv:
                     if args.id_column and args.mark_column:
-                         sep =  ';' if args.input_sep == 'semi' else \
-                                ',' if args.input_sep == 'comma' else \
-                                '\t' if args.input_sep == 'tab' else \
-                                '|' if args.input_sep == 'pipe' else \
-                                args.input_sep
                          fill_marks_in_file(
                              args.input_csv, args.id_column, args.mark_column, results_csv, 
-                             args.fuzzy_id_match, args.input_encoding, sep, args.output_decimal_sep,
+                             args.fuzzy_id_match, args.input_encoding, input_sep, args.output_decimal_sep,
                              name_col=args.name_column, simplify_csv=args.simplify_csv
                          )
                     else:
@@ -312,7 +419,7 @@ def main():
                 logging.warning(f"Argument '--{name}' is ignored for format '{output_fmt}'.")
 
         # Arguments specific to pexams
-        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header"]
+        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header", "mc_total_points"]
         for arg in pexams_args:
             check_arg(arg, ["pexams"])
             
@@ -335,6 +442,7 @@ def main():
                 extra_model_templates=args.extra_model_templates,
                 custom_header=args.custom_header,
                 markdown_asset_base_dir=os.path.dirname(os.path.abspath(args.input_file)),
+                mc_total_points=args.mc_total_points,
             )
         else:
             # For non-pexams formats, we apply the shuffling here before passing to converter.
@@ -411,6 +519,75 @@ def main():
             solutions_per_model=solutions_full,
             penalty=args.penalty,
         )
+
+    elif args.command == "moodle-feedback-zip":
+        moodle_sep = ";" if args.moodle_sep == "semi" else args.moodle_sep
+        outputs = []
+        if args.feedback_mode in ("zip", "both"):
+            if not args.output_zip:
+                logging.error("--output-zip is required when --feedback-mode is zip or both.")
+                return
+            try:
+                result = create_moodle_feedback_zip(
+                    moodle_csv=args.moodle_csv,
+                    correction_dir=args.correction_dir,
+                    output_zip=args.output_zip,
+                    id_column=args.id_column,
+                    participant_column=args.participant_column,
+                    name_column=args.name_column,
+                    mark_column=args.mark_column,
+                    images_dir=args.images_dir,
+                    marks_csv=args.marks_csv,
+                    moodle_encoding=args.moodle_encoding,
+                    moodle_sep=moodle_sep,
+                    max_mark=args.max_mark,
+                    image_id_column=args.image_id_column,
+                    feedback_file_format=args.feedback_file_format,
+                    overwrite=args.overwrite,
+                )
+            except Exception as e:
+                logging.error("Failed to create Moodle feedback zip: %s", e)
+                return
+            outputs.append(("zip", result.output_zip, result.manifest_csv, result))
+
+        if args.feedback_mode in ("csv", "both"):
+            output_csv = args.output_csv
+            if not output_csv:
+                output_csv = os.path.join(args.correction_dir, "moodle_feedback_base64.csv")
+            grade_column = args.grade_column if args.grade_column else None
+            try:
+                result = create_moodle_feedback_csv(
+                    moodle_csv=args.moodle_csv,
+                    correction_dir=args.correction_dir,
+                    output_csv=output_csv,
+                    id_column=args.id_column,
+                    participant_column=args.participant_column,
+                    name_column=args.name_column,
+                    feedback_column=args.feedback_column,
+                    grade_column=grade_column,
+                    mark_column=args.mark_column,
+                    images_dir=args.images_dir,
+                    marks_csv=args.marks_csv,
+                    moodle_encoding=args.moodle_encoding,
+                    moodle_sep=moodle_sep,
+                    max_mark=args.max_mark,
+                    image_id_column=args.image_id_column,
+                    csv_decimal_sep=args.csv_decimal_sep,
+                    overwrite=args.overwrite,
+                )
+            except Exception as e:
+                logging.error("Failed to create Moodle feedback CSV: %s", e)
+                return
+            outputs.append(("csv", result.output_csv, result.manifest_csv, result))
+
+        for kind, path, manifest, result in outputs:
+            print(f"Moodle feedback {kind} saved to: {path}")
+            print(f"Manifest saved to: {manifest}")
+            print(
+                f"Added {result.added} feedback item(s). "
+                f"Unmatched Moodle rows: {result.unmatched_roster}. "
+                f"Unmatched marks/images: {result.unmatched_marks}."
+            )
 
 
 if __name__ == "__main__":

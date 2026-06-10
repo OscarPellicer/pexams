@@ -1,5 +1,6 @@
 import logging
 import re
+import json
 from typing import List, Optional, Union
 import random
 import os
@@ -206,7 +207,11 @@ def _generate_questions_markdown(
         'pymdownx.arithmatex': {'generic': True}
     }
     for q in questions:
-        md_parts.append('\n<div class="question-wrapper">\n')
+        question_classes = ["question-wrapper"]
+        if q.is_open_answer:
+            question_classes.append("open-answer-question")
+        question_style = f' style="font-size: {q.font_size};"' if q.font_size else ""
+        md_parts.append(f'\n<div class="{" ".join(question_classes)}" data-question-id="{q.id}"{question_style}>\n')
 
         # Convert question text to HTML, ensuring it's treated as a single paragraph block
         question_text_html = markdown.markdown(q.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
@@ -230,20 +235,76 @@ def _generate_questions_markdown(
                 style_attr = f'style="{" ".join(style_parts)}"' if style_parts else ""
                 md_parts.append(f'<img src="{src}" alt="Image for question {q.id}" {style_attr}>\n')
 
-        md_parts.append('<div class="options-block">')
-        for i, option in enumerate(q.options):
-            option_label = chr(ord('A') + i)
-            # Convert option text to HTML, ensuring it's a single paragraph block
-            option_text_html = markdown.markdown(option.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
-            if option_text_html.startswith("<p>"):
-                option_text_html = option_text_html[3:-4]
+        if q.is_open_answer:
+            height_style = f"min-height: {max(1, q.answer_area.lines) * 7 + 6}mm;"
+            if q.answer_area.height_mm is not None:
+                height_style = f"height: {q.answer_area.height_mm}mm;"
+            line_count = max(1, q.answer_area.lines)
+            md_parts.append(
+                f'<div class="open-answer-box" data-question-id="{q.id}" '
+                f'data-lines="{line_count}" style="{height_style}">'
+            )
+            if q.answer_area.show_lines:
+                for _ in range(line_count):
+                    md_parts.append('<div class="open-answer-line"></div>')
+            md_parts.append("</div>")
+        else:
+            md_parts.append('<div class="options-block">')
+            for i, option in enumerate(q.options):
+                option_label = chr(ord('A') + i)
+                # Convert option text to HTML, ensuring it's a single paragraph block
+                option_text_html = markdown.markdown(option.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
+                if option_text_html.startswith("<p>"):
+                    option_text_html = option_text_html[3:-4]
 
-            md_parts.append(f'<div class="option-item"><span class="option-label"><b>{option_label})</b></span><span class="option-text">{option_text_html}</span></div>')
-        md_parts.append("</div>") # Close options-block
+                md_parts.append(f'<div class="option-item"><span class="option-label"><b>{option_label})</b></span><span class="option-text">{option_text_html}</span></div>')
+            md_parts.append("</div>") # Close options-block
             
         md_parts.append('</div>\n')
 
     return "\n".join(md_parts)
+
+
+def _extract_open_answer_area_metadata(page, model_questions: List[PexamQuestion], exam_model: int) -> List[dict]:
+    """Read rendered open-answer box positions from the browser page."""
+    question_lookup = {str(q.id): q for q in model_questions}
+    raw_boxes = page.evaluate(
+        """() => {
+            const pxPerMm = 96 / 25.4;
+            const containers = Array.from(document.querySelectorAll('.page-container'));
+            return Array.from(document.querySelectorAll('.open-answer-box')).map((box) => {
+                const container = containers.find((candidate) => candidate.contains(box));
+                const boxRect = box.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                return {
+                    question_id: box.dataset.questionId,
+                    page_index: containers.indexOf(container) + 1,
+                    x_mm: (boxRect.left - containerRect.left) / pxPerMm,
+                    y_mm: (boxRect.top - containerRect.top) / pxPerMm,
+                    width_mm: boxRect.width / pxPerMm,
+                    height_mm: boxRect.height / pxPerMm,
+                    lines: Number(box.dataset.lines || 0),
+                };
+            });
+        }"""
+    )
+
+    metadata = []
+    for box in raw_boxes:
+        question = question_lookup.get(str(box["question_id"]))
+        metadata.append({
+            "model_id": str(exam_model),
+            "question_id": box["question_id"],
+            "original_id": str(question.original_id) if question and question.original_id is not None else None,
+            "page_index": int(box["page_index"]),
+            "x_mm": round(float(box["x_mm"]), 3),
+            "y_mm": round(float(box["y_mm"]), 3),
+            "width_mm": round(float(box["width_mm"]), 3),
+            "height_mm": round(float(box["height_mm"]), 3),
+            "lines": int(box["lines"]),
+            "points": float(question.points) if question else None,
+        })
+    return metadata
 
 
 
@@ -302,6 +363,7 @@ def generate_exams(
     extra_model_templates: int = 0,
     custom_header: Optional[Union[str, Path]] = None,
     markdown_asset_base_dir: Optional[str] = None,
+    mc_total_points: Optional[float] = None,
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
@@ -328,9 +390,25 @@ def generate_exams(
         questions_list = questions
 
     # Check max questions
-    if len(questions_list) > layout.MAX_QUESTIONS:
-        logging.error(f"Too many questions ({len(questions_list)}). Max allowed is {layout.MAX_QUESTIONS}.")
-        raise ValueError(f"Too many questions ({len(questions_list)}). Max allowed is {layout.MAX_QUESTIONS}.")
+    multiple_choice_questions = [q for q in questions_list if q.is_multiple_choice]
+    if len(multiple_choice_questions) > layout.MAX_QUESTIONS:
+        logging.error(f"Too many multiple-choice questions ({len(multiple_choice_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
+        raise ValueError(f"Too many multiple-choice questions ({len(multiple_choice_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
+
+    if mc_total_points is not None:
+        if mc_total_points <= 0:
+            raise ValueError("--mc-total-points must be greater than 0.")
+        explicit_points = [q for q in multiple_choice_questions if q.points != 1.0]
+        if explicit_points:
+            explicit_ids = ", ".join(str(q.original_id or q.id) for q in explicit_points)
+            raise ValueError(
+                "--mc-total-points cannot be combined with per-question MC points. "
+                f"Questions with explicit non-default points: {explicit_ids}"
+            )
+        if multiple_choice_questions:
+            points_per_question = mc_total_points / len(multiple_choice_questions)
+            for q in multiple_choice_questions:
+                q.points = points_per_question
 
     logging.info(f"Loaded {len(questions_list)} questions.")
     logging.info(f"Exams will be output to: {output_dir}")
@@ -392,14 +470,15 @@ def generate_exams(
     utils.shuffle_questions_list(questions_shuffled)
     
     generated_pdfs = []
+    open_answer_areas = []
 
     for i in range(1, num_models + 1):
         # Deepcopy to avoid modifying the base shuffled list
         model_questions = deepcopy(questions_shuffled)
         
-        # --- Shuffle options for each question to create unique models ---
+        # --- Shuffle options for each multiple-choice question to create unique models ---
         for q in model_questions:
-            if q.options and q.correct_answer_index is not None:
+            if q.is_multiple_choice and q.options and q.correct_answer_index is not None:
                 # Store the original correct option before shuffling
                 original_correct_option = q.options[q.correct_answer_index]
                 
@@ -422,8 +501,9 @@ def generate_exams(
             f.write(model_exam.model_dump_json(indent=4))
         logging.info(f"Saved questions for model {i} to: {questions_json_path}")
 
+        model_mc_questions = [q for q in model_questions if q.is_multiple_choice]
         answer_sheet_html = _generate_answer_sheet_html(
-            model_questions, 
+            model_mc_questions,
             i, 
             exam_title=exam_title,
             exam_course=exam_course,
@@ -454,9 +534,15 @@ def generate_exams(
 <body>
     {answer_sheet_html}
     <div class="page-container" style="page-break-after: always;"></div>
-    <div class="page-container questions-container {column_class}">
+    <div class="page-container questions-page">
+        <div class="fiducial top-left"></div>
+        <div class="fiducial top-right"></div>
+        <div class="fiducial bottom-left"></div>
+        <div class="fiducial bottom-right"></div>
+        <div class="questions-container {column_class}">
         {custom_header_html}
         {questions_html}
+        </div>
     </div>
 </body>
 </html>
@@ -482,6 +568,7 @@ def generate_exams(
 
                 # A definitive wait to ensure all rendering is complete.
                 page.wait_for_timeout(1000)
+                open_answer_areas.extend(_extract_open_answer_area_metadata(page, model_questions, i))
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
                 
@@ -527,6 +614,12 @@ def generate_exams(
             if not keep_html and os.path.exists(html_filepath):
                 os.remove(html_filepath)
                 logging.info(f"Removed temporary HTML file: {html_filepath}")
+
+    if open_answer_areas:
+        open_areas_path = os.path.join(output_dir, "open_answer_areas.json")
+        with open(open_areas_path, "w", encoding="utf-8") as f:
+            json.dump(open_answer_areas, f, indent=2, ensure_ascii=False)
+        logging.info(f"Saved open-answer area metadata to: {open_areas_path}")
 
     if total_students > 0 and generated_pdfs:
         _create_mass_exam_pdf(generated_pdfs, total_students, output_dir, extra_model_templates)
@@ -614,6 +707,7 @@ def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuesti
     from pexams.correct_exams import _apply_perspective_transform
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
+    questions = [q for q in questions if q.is_multiple_choice]
     layout_data = layout.get_answer_sheet_layout(questions)
     
     for q in questions:
@@ -671,6 +765,7 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
     warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
 
     # --- Draw Fake Data onto the warped sheet ---
+    questions = [q for q in questions if q.is_multiple_choice]
     layout_data = layout.get_answer_sheet_layout(questions)
     
     # Fake Name

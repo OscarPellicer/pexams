@@ -92,6 +92,10 @@ def convert_to_moodle_xml(questions: List[PexamQuestion], output_file: str, max_
         return elem
 
     for i, q in enumerate(questions):
+        if q.is_open_answer:
+            logging.warning("Skipping open-answer question %s: Moodle XML export currently supports multiple choice only.", q.id)
+            continue
+
         question_elem = doc.createElement("question")
         question_elem.setAttribute("type", "multichoice")
         quiz.appendChild(question_elem)
