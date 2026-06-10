@@ -28,6 +28,9 @@ def convert_to_gift(questions: List[PexamQuestion], output_file: str, max_image_
 
     with open(output_file, 'w', encoding='utf-8') as f:
         for i, q in enumerate(questions):
+            if q.is_open_answer:
+                logging.warning("Skipping open-answer question %s: GIFT export currently supports multiple choice only.", q.id)
+                continue
             
             # Use question ID in title for uniqueness
             question_name = f"Q{i+1}_{q.id}"

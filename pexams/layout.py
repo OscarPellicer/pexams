@@ -1,5 +1,5 @@
 # All dimensions are in millimeters (mm)
-from typing import Dict, Tuple, NamedTuple, List
+from typing import Dict, Tuple, NamedTuple, List, Union
 from pexams.schemas import PexamQuestion
 
 class BoxCoordinates(NamedTuple):
@@ -22,9 +22,9 @@ class AnswerSheetLayout(NamedTuple):
     student_signature_label: Tuple[float, float]
     student_signature_box: BoxCoordinates
     instructions: Tuple[float, float]
-    question_numbers: Dict[int, Tuple[float, float]]
+    question_numbers: Dict[Union[int, str], Tuple[float, float]]
     header_labels: Dict[int, Dict[int, Tuple[float, float]]] # group_index -> label_index -> (x, y)
-    answer_boxes: Dict[int, Dict[int, BoxCoordinates]] # question_id -> option_index -> BoxCoordinates
+    answer_boxes: Dict[Union[int, str], Dict[int, BoxCoordinates]] # question_id -> option_index -> BoxCoordinates
 
 # --- Page and Printable Area ---
 PRINTABLE_WIDTH = 180
@@ -152,7 +152,7 @@ def get_answer_sheet_layout(questions: List[PexamQuestion]) -> AnswerSheetLayout
             if q_num_zero_based >= num_questions:
                 break
             
-            question_id = q_num_zero_based + 1
+            question_id = questions[q_num_zero_based].id
             answer_boxes[question_id] = {}
 
             q_num_y = group_top_mm + first_bubble_offset_y + index_in_group * BUBBLE_STEP_Y

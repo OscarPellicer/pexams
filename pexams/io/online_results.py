@@ -417,7 +417,7 @@ def parse_wooclap_results(
                 answers[question.id] = "NA"
 
         score = sum(
-            1
+            float(q.points)
             for q in matched_questions
             if (
                 q.correct_answer_index is not None
@@ -677,7 +677,7 @@ def parse_moodle_results(
                 answers[question.id] = "NA"
 
         score = sum(
-            1
+            float(q.points)
             for q in ordered_questions
             if (
                 q.correct_answer_index is not None

@@ -123,9 +123,11 @@ def test_full_pipeline(output_dir, sample_questions):
     valid_ids = [str(x) for x in df["student_id"] if "unknown" not in str(x).lower()]
     assert valid_ids, "No valid student IDs found in correction_results.csv."
 
-    # Prefer a student with score > 0 so the mark assertion is meaningful.
-    scored_ids = [str(r["student_id"]) for _, r in df.iterrows()
-                  if r.get("score", 0) > 0 and "unknown" not in str(r["student_id"]).lower()]
+    # Prefer a student with a final mark > 0 so the mark assertion is meaningful
+    # after analysis-time voiding rules have been applied.
+    df_marks_initial = pd.read_csv(final_marks_path)
+    scored_ids = [str(r["student_id"]) for _, r in df_marks_initial.iterrows()
+                  if r.get("mark", 0) > 0 and "unknown" not in str(r["student_id"]).lower()]
     target_id = scored_ids[0] if scored_ids else valid_ids[0]
     fuzzy_id = target_id[:-1] + ("A" if target_id[-1] != "A" else "B")
 

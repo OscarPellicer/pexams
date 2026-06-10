@@ -1,10 +1,100 @@
 import re
 import os
 import logging
-from typing import List, Dict, Optional
-from pathlib import Path
+from typing import List, Optional, Tuple
 
-from pexams.schemas import PexamQuestion, PexamOption
+from pexams.schemas import PexamAnswerArea, PexamQuestion, PexamOption
+
+
+def _parse_question_header(header_line: str) -> Tuple[str, dict]:
+    """Parse headers such as '## q1 {type=open points=4 lines=10}'."""
+    match = re.match(r'^##\s+(.+)', header_line)
+    if not match:
+        return "", {}
+
+    raw_header = match.group(1).strip()
+    attrs = {}
+    attr_match = re.search(r'\{([^}]*)\}\s*$', raw_header)
+    if attr_match:
+        raw_header = raw_header[:attr_match.start()].strip()
+        for token in attr_match.group(1).split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            attrs[key.strip().lower()] = value.strip().strip('"\'')
+
+    return raw_header, attrs
+
+
+def _normalize_question_type(raw_type: Optional[str]) -> str:
+    if not raw_type:
+        return "multiple_choice"
+    normalized = raw_type.strip().lower().replace("-", "_")
+    if normalized in {"open", "open_answer", "short_answer", "free_text", "essay"}:
+        return "open_answer"
+    return "multiple_choice"
+
+
+def _parse_float_attr(attrs: dict, key: str, default: Optional[float] = None) -> Optional[float]:
+    if key not in attrs:
+        return default
+    try:
+        return float(attrs[key])
+    except (TypeError, ValueError):
+        logging.warning("Invalid numeric value for '%s': %s", key, attrs[key])
+        return default
+
+
+def _parse_int_attr(attrs: dict, key: str, default: int) -> int:
+    if key not in attrs:
+        return default
+    try:
+        return int(attrs[key])
+    except (TypeError, ValueError):
+        logging.warning("Invalid integer value for '%s': %s", key, attrs[key])
+        return default
+
+
+def _parse_bool_attr(attrs: dict, key: str, default: bool = False) -> bool:
+    if key not in attrs:
+        return default
+    value = str(attrs[key]).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    logging.warning("Invalid boolean value for '%s': %s", key, attrs[key])
+    return default
+
+
+def _split_open_answer_sections(lines: List[str]) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    sections = {
+        "question": [],
+        "expected_answer": [],
+        "rubric": [],
+        "answer_area": [],
+    }
+    current = "question"
+    section_markers = {
+        "**expected answer:**": "expected_answer",
+        "**expected_answer:**": "expected_answer",
+        "**rubric:**": "rubric",
+        "**answer area:**": "answer_area",
+        "**answer_area:**": "answer_area",
+    }
+
+    for line in lines:
+        marker = line.strip().lower()
+        if marker in section_markers:
+            current = section_markers[marker]
+            continue
+        sections[current].append(line)
+
+    question_text = "\n".join(sections["question"]).strip()
+    expected_answer = "\n".join(sections["expected_answer"]).strip() or None
+    rubric = "\n".join(sections["rubric"]).strip() or None
+    answer_area = "\n".join(sections["answer_area"]).strip() or None
+    return question_text, expected_answer, rubric, answer_area
 
 def load_questions_from_md(path: str) -> List[PexamQuestion]:
     """
@@ -42,14 +132,11 @@ def load_questions_from_md(path: str) -> List[PexamQuestion]:
 
         lines = block.split('\n')
         
-        # Parse ID from header: "## question_id"
         header_line = lines[0]
-        match = re.match(r'^##\s+(.+)', header_line)
-        if not match:
+        question_id_str, attrs = _parse_question_header(header_line)
+        if not question_id_str:
             continue
-        
-        question_id_str = match.group(1).strip()
-        
+
         content_lines = lines[1:]
         
         # Check for and extract a quoted image line
@@ -73,6 +160,44 @@ def load_questions_from_md(path: str) -> List[PexamQuestion]:
 
                 # Remove the image line from the content
                 content_lines = content_lines[1:]
+
+        question_type = _normalize_question_type(attrs.get("type"))
+        points = _parse_float_attr(attrs, "points", 1.0) or 1.0
+        answer_lines = _parse_int_attr(attrs, "lines", 8)
+        height_mm = _parse_float_attr(attrs, "height_mm")
+        show_lines = _parse_bool_attr(attrs, "show_lines", False)
+        font_size = attrs.get("font_size")
+
+        if question_type == "open_answer":
+            question_text, expected_answer, rubric, answer_area_text = _split_open_answer_sections(content_lines)
+            if not question_text:
+                logging.warning(f"Open-answer question ID '{question_id_str}' has no question text. Skipping.")
+                continue
+
+            if answer_area_text:
+                line_match = re.search(r'lines\s*[:=]\s*(\d+)', answer_area_text, flags=re.IGNORECASE)
+                if line_match:
+                    answer_lines = int(line_match.group(1))
+                height_match = re.search(r'height_mm\s*[:=]\s*([0-9.]+)', answer_area_text, flags=re.IGNORECASE)
+                if height_match:
+                    height_mm = float(height_match.group(1))
+                show_lines_match = re.search(r'show_lines\s*[:=]\s*(true|false|yes|no|1|0|on|off)', answer_area_text, flags=re.IGNORECASE)
+                if show_lines_match:
+                    show_lines = _parse_bool_attr({"show_lines": show_lines_match.group(1)}, "show_lines", show_lines)
+
+            questions.append(PexamQuestion(
+                id=question_id_str,
+                question_type="open_answer",
+                text=question_text,
+                points=points,
+                options=[],
+                image_source=image_path,
+                expected_answer=expected_answer,
+                rubric=rubric,
+                answer_area=PexamAnswerArea(lines=answer_lines, height_mm=height_mm, show_lines=show_lines),
+                font_size=font_size,
+            ))
+            continue
 
         first_answer_idx = -1
         for i, line in enumerate(content_lines):
@@ -122,10 +247,13 @@ def load_questions_from_md(path: str) -> List[PexamQuestion]:
         
         questions.append(PexamQuestion(
             id=question_id_str,
+            question_type="multiple_choice",
             text=question_text,
+            points=points,
             options=options,
             image_source=image_path,
-            explanation=explanation
+            explanation=explanation,
+            font_size=font_size,
         ))
         
     return questions
@@ -139,7 +267,21 @@ def save_questions_to_md(questions: List[PexamQuestion], output_file: str):
     with open(output_file, 'w', encoding='utf-8') as f:
         for q in questions:
             # Header
-            f.write(f"## {q.id}\n")
+            attrs = []
+            if q.question_type != "multiple_choice":
+                attrs.append(f"type={q.question_type}")
+            if q.points != 1.0:
+                attrs.append(f"points={q.points:g}")
+            if q.font_size:
+                attrs.append(f"font_size={q.font_size}")
+            if q.is_open_answer:
+                attrs.append(f"lines={q.answer_area.lines}")
+                if q.answer_area.show_lines:
+                    attrs.append("show_lines=true")
+                if q.answer_area.height_mm is not None:
+                    attrs.append(f"height_mm={q.answer_area.height_mm:g}")
+            attr_text = f" {{{' '.join(attrs)}}}" if attrs else ""
+            f.write(f"## {q.id}{attr_text}\n")
             
             # Image (in blockquote)
             if q.image_source:
@@ -156,6 +298,14 @@ def save_questions_to_md(questions: List[PexamQuestion], output_file: str):
             
             # Question text
             f.write(f"{q.text}\n")
+
+            if q.is_open_answer:
+                if q.expected_answer:
+                    f.write(f"\n**Expected answer:**\n{q.expected_answer}\n")
+                if q.rubric:
+                    f.write(f"\n**Rubric:**\n{q.rubric}\n")
+                f.write("\n")
+                continue
             
             # Options (First one is correct)
             # Find correct option

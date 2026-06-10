@@ -17,6 +17,9 @@ def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_imag
     # --- Sanitize quotes before writing ---
     quotes_found_warning = False
     for q in questions:
+        if q.is_open_answer:
+            continue
+
         if '"' in q.text:
             q.text = q.text.replace('"', "'")
             quotes_found_warning = True
@@ -31,6 +34,10 @@ def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_imag
     # --- End sanitization ---
 
     for i, q in enumerate(questions):
+        if q.is_open_answer:
+            logging.warning("Skipping open-answer question %s: R/exams export currently supports multiple choice only.", q.id)
+            continue
+
         # Create a unique filename
         q_filename = f"question_{q.id}.Rmd"
         q_filepath = os.path.join(output_dir, q_filename)

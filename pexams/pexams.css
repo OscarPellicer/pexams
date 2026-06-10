@@ -211,6 +211,17 @@ h2 { font-size: 12pt; }
     height: 100%;
 }
 
+.questions-page {
+    position: relative;
+    width: 180mm;
+    min-height: 267mm;
+}
+
+.questions-page .questions-container {
+    box-sizing: border-box;
+    padding: 8mm 2mm 2mm 2mm;
+}
+
 .questions-container.two-columns {
     column-count: 2;
     column-gap: 5mm;
@@ -228,6 +239,30 @@ h2 { font-size: 12pt; }
 
 .question-text {
     margin-bottom: 0.5em;
+}
+
+.open-answer-question {
+    column-span: all;
+}
+
+.open-answer-box {
+    border: 1px solid #222;
+    border-radius: 2px;
+    min-height: 28mm;
+    padding: 3mm;
+    margin-top: 2mm;
+    margin-bottom: 4mm;
+    box-sizing: border-box;
+    background: #fff;
+}
+
+.open-answer-line {
+    height: 7mm;
+    border-bottom: 1px solid #c7c7c7;
+}
+
+.open-answer-line:last-child {
+    border-bottom: 0;
 }
 
 .options-block {

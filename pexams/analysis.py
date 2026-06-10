@@ -1,4 +1,6 @@
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import argparse
 import os
@@ -486,7 +488,7 @@ def analyze_results(
     output_dir=".",
     exam_dir: Optional[str] = None,
     solutions_per_model: Optional[Dict] = None,
-    max_score: Optional[int] = None,
+    max_score: Optional[float] = None,
     void_questions_str: Optional[str] = None, 
     void_questions_nicely_str: Optional[str] = None,
     penalty: float = 0.0
@@ -571,8 +573,10 @@ def analyze_results(
             sol_data = model_solutions[q_id]
             if isinstance(sol_data, dict):
                 correct_answer_idx = sol_data.get('correct_answer_index')
+                question_points = float(sol_data.get('points', 1.0) or 1.0)
             else:
                 correct_answer_idx = sol_data
+                question_points = 1.0
                 
             if correct_answer_idx is None:
                 continue # Skip questions without a correct answer (e.g., surveys)
@@ -584,16 +588,16 @@ def analyze_results(
             # Question is voided nicely
             if q_id in void_q_nicely_list:
                 if is_correct:
-                    student_score += 1
-                    student_max_score += 1
+                    student_score += question_points
+                    student_max_score += question_points
                     student_correct += 1
                 # If incorrect, it doesn't count towards student's score or max score
             
             # Regular question
             else:
-                student_max_score += 1
+                student_max_score += question_points
                 if is_correct:
-                    student_score += 1
+                    student_score += question_points
                     student_correct += 1
                 elif is_answered:
                     if penalty > 0:
