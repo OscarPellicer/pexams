@@ -12,13 +12,13 @@ Below is an example of a simulated answer sheet and the annotated, corrected ver
 
 | Simulated Scan | Corrected Scan |
 | :---: | :---: |
-| <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/simulated_scan_model_1_1.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/WKAWA8P3.png" width="400"> |
+| <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/refs/heads/main/media/simulated_scan_model_1_1.png" width="400"> | <img src="https://raw.githubusercontent.com/OscarPellicer/pexams/refs/heads/main/media/WKAWA8P3.png" width="400"> |
 
 The analysis module generates a detailed statistical report (PDF) including answer distributions and mark histograms.
 
-![Answer Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/answer_distribution.png) 
+![Answer Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/refs/heads/main/media/answer_distribution.png) 
 
-![Mark Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/main/media/mark_distribution_0_10.png)
+![Mark Distribution](https://raw.githubusercontent.com/OscarPellicer/pexams/refs/heads/main/media/mark_distribution_0_10.png)
 
 
 

@@ -153,7 +153,8 @@ def test_full_pipeline(output_dir, sample_questions):
     # fill_marks_in_file rewrites final_marks.csv replacing the OCR id (target_id)
     # with the roster id (fuzzy_id), so we search for either.
     df_marks = pd.read_csv(final_marks_path)
-    row_old = df_marks[df_marks["student_id"].astype(str).isin([target_id, fuzzy_id])]
+    expected_ids = {target_id.upper(), fuzzy_id.upper()}
+    row_old = df_marks[df_marks["student_id"].astype(str).str.upper().isin(expected_ids)]
     assert not row_old.empty, (
         f"Student {target_id!r} (or {fuzzy_id!r}) not found in final_marks.csv."
     )

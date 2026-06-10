@@ -1,0 +1,99 @@
+name: Test, Release, and Publish
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+          playwright install chromium
+      - name: Run pytest suite
+        run: python -m pytest tests -m "not llm"
+      - name: Run end-to-end CLI smoke test
+        run: pexams test --output-dir ./ci_test_output
+
+  release-and-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pexams
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Read version
+        id: version
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          version = data["project"]["version"]
+          tag = f"v{version}"
+          print(f"version={version}")
+          print(f"tag={tag}")
+          PY
+      - name: Check release state
+        id: release
+        run: |
+          publish=true
+          if git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null; then
+            publish=false
+          fi
+          if python - <<'PY'
+          import json
+          import sys
+          import urllib.error
+          import urllib.request
+          version = "${{ steps.version.outputs.version }}"
+          try:
+              with urllib.request.urlopen("https://pypi.org/pypi/pexams/json", timeout=15) as response:
+                  data = json.load(response)
+          except urllib.error.HTTPError as exc:
+              sys.exit(0 if exc.code == 404 else 1)
+          sys.exit(1 if version in data.get("releases", {}) else 0)
+          PY
+          then
+            :
+          else
+            publish=false
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes
+      - name: Build package
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Publish package to PyPI
+        if: steps.release.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
