@@ -742,6 +742,7 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
     fake = Faker()
     scan_output_dir = os.path.join(output_dir, "simulated_scans")
     os.makedirs(scan_output_dir, exist_ok=True)
+    manifest_path = os.path.join(scan_output_dir, "simulated_scan_manifest.json")
 
     try:
         images = convert_from_path(original_pdf_path, first_page=1, last_page=1, dpi=300)
@@ -812,6 +813,20 @@ def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuesti
             cv2.fillPoly(warped_sheet, [points], (10, 10, 10))
 
     # Save the final simulated scan
-    output_path = os.path.join(scan_output_dir, f"simulated_scan_model_{model_num}.png")
+    output_filename = f"simulated_scan_model_{model_num}.png"
+    output_path = os.path.join(scan_output_dir, output_filename)
     cv2.imwrite(output_path, warped_sheet)
+    try:
+        manifest = {}
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        manifest[output_filename] = {
+            "student_id": fake_id,
+            "model_num": str(model_num),
+        }
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=True)
+    except Exception as e:
+        logging.warning(f"Failed to update simulated scan manifest for {output_filename}: {e}")
     logging.info(f"Saved simulated scan to {output_path}")
