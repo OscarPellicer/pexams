@@ -29,6 +29,19 @@ from pexams.schemas import PexamExam, PexamQuestion, PexamOption
 from pexams.student_matching import match_scanned_students
 from pathlib import Path
 
+
+def _load_simulated_scan_manifest(input_path: str) -> Dict[str, dict]:
+    manifest_path = os.path.join(input_path, "simulated_scan_manifest.json")
+    if not os.path.isdir(input_path) or not os.path.exists(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as e:
+        logging.warning("Failed to read simulated scan manifest %s: %s", manifest_path, e)
+        return {}
+
 # Define the standard resolution for the entire correction process for consistency.
 PX_PER_MM = 10.0
 
@@ -539,9 +552,12 @@ def correct_exams(
     os.makedirs(debug_dir, exist_ok=True)
 
     images_to_process: List[np.ndarray] = []
+    image_sources: List[str] = []
+    simulated_scan_manifest: Dict[str, dict] = {}
 
     if os.path.isdir(input_path):
         logging.info("Input path is a directory, scanning for PNG/JPG images.")
+        simulated_scan_manifest = _load_simulated_scan_manifest(input_path)
         image_files = glob.glob(os.path.join(input_path, "*.png")) + \
                       glob.glob(os.path.join(input_path, "*.jpg")) + \
                       glob.glob(os.path.join(input_path, "*.jpeg"))
@@ -550,6 +566,7 @@ def correct_exams(
             img = cv2.imread(image_file)
             if img is not None:
                 images_to_process.append(img)
+                image_sources.append(image_file)
             else:
                 logging.warning(f"Could not read image file: {image_file}")
 
@@ -561,6 +578,7 @@ def correct_exams(
                 frame = np.array(pil_img)
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 images_to_process.append(frame)
+                image_sources.append("")
         except Exception as e:
             logging.error(f"Failed to convert PDF to images: {e}")
             return False
@@ -594,6 +612,7 @@ def correct_exams(
 
     for i, frame in enumerate(images_to_process):
         page_number = i + 1
+        source_path = image_sources[i] if i < len(image_sources) else ""
         logging.info(f"Processing page {page_number}...")
         
         marker_corners = _find_fiducial_markers(frame, debug_dir, page_number)
@@ -646,10 +665,22 @@ def correct_exams(
         if "?" in ocr_student_id or not ocr_student_id:
             logging.warning("Could not reliably OCR student ID for page %s. Keeping only staged scan id: %s", page_number, scanned_id)
 
+        forced_student_id = ""
+        if source_path:
+            simulated_entry = simulated_scan_manifest.get(os.path.basename(source_path), {})
+            forced_student_id = str(simulated_entry.get("student_id", "")).strip().upper()
+            if forced_student_id:
+                logging.info(
+                    "Page %s: using predefined simulated-scan student ID '%s' while preserving OCR result '%s'.",
+                    page_number,
+                    forced_student_id,
+                    ocr_student_id,
+                )
+
         page_result = _analyze_and_score(warped_sheet, solutions, PX_PER_MM, questions)
         page_result["page"] = page_number
         page_result["scanned_id"] = scanned_id
-        page_result["student_id"] = scanned_id
+        page_result["student_id"] = forced_student_id or scanned_id
         page_result["student_name"] = ""
         page_result["ocr_student_id"] = ocr_student_id
         page_result["ocr_student_name"] = student_name
