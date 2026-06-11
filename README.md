@@ -4,6 +4,12 @@ Pexams is a library for generating beautiful multiple-choice exam sheets and aut
 
 NOTE: This library is still in development and is not yet ready for production use. Although everything should work, there may be some bugs, missing features, or breaking changes in future versions.
 
+## AI4Exams ecosystem
+
+Pexams is part of the AI4Exams ecosystem together with `ptestgen`, `pevaluate`, and the planned `pstudio` visual orchestration layer.
+
+![AI4Exams ecosystem](https://raw.githubusercontent.com/OscarPellicer/ptestgen/refs/heads/main/media/ai4exams_ecosystem.png)
+
 ## Visual examples
 
 You can view an example of a fully generated exam PDF [here](https://github.com/OscarPellicer/pexams/blob/main/media/exam_model_1.pdf).
