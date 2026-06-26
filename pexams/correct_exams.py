@@ -45,6 +45,36 @@ def _load_simulated_scan_manifest(input_path: str) -> Dict[str, dict]:
 # Define the standard resolution for the entire correction process for consistency.
 PX_PER_MM = 10.0
 
+def _fiducial_template_for(image):
+    """Create a plus-shaped fiducial template scaled to the scan resolution."""
+    page_height, page_width = image.shape[:2]
+    size = max(41, int(round(min(page_width, page_height) * 0.049)))
+    if size % 2 == 0:
+        size += 1
+    arm = max(25, int(round(size * 0.80)))
+    thickness = max(5, int(round(size * 0.09)))
+
+    template = np.zeros((size, size), dtype=np.uint8)
+    center = size // 2
+    half_arm = arm // 2
+    half_thickness = thickness // 2
+    cv2.rectangle(
+        template,
+        (center - half_thickness, center - half_arm),
+        (center + half_thickness, center + half_arm),
+        255,
+        -1,
+    )
+    cv2.rectangle(
+        template,
+        (center - half_arm, center - half_thickness),
+        (center + half_arm, center + half_thickness),
+        255,
+        -1,
+    )
+    return template
+
+
 def _find_fiducial_markers(image, debug_dir=None, page_number=None):
     """
     Detects four fiducial crosses in the corners of an image using contour analysis,
@@ -56,98 +86,75 @@ def _find_fiducial_markers(image, debug_dir=None, page_number=None):
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Using a fixed binary threshold, which is more robust for this task.
-    # The value 97 is a good starting point from the rexams implementation.
-    _, thresh = cv2.threshold(gray, 97, 255, cv2.THRESH_BINARY_INV)
+    # Use a moderately permissive fixed threshold. The fiducials are printed,
+    # but real scans often lighten the strokes enough that a very dark cutoff
+    # misses parts of the cross and makes template matching unstable.
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
     
     if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
         cv2.imwrite(os.path.join(debug_dir, f"page_{page_number}_1_thresh.png"), thresh)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
     page_height, page_width = image.shape[:2]
-    
-    # --- Define corner regions ---
-    # (x_min, x_max, y_min, y_max) for each corner
     corner_regions = {
-        "tl": (0, page_width * 0.2, 0, page_height * 0.2),
-        "tr": (page_width * 0.8, page_width, 0, page_height * 0.2),
-        "bl": (0, page_width * 0.2, page_height * 0.8, page_height),
-        "br": (page_width * 0.8, page_width, page_height * 0.8, page_height),
+        "tl": (0, int(page_width * 0.25), 0, int(page_height * 0.25)),
+        "tr": (int(page_width * 0.75), page_width, 0, int(page_height * 0.25)),
+        "bl": (0, int(page_width * 0.25), int(page_height * 0.75), page_height),
+        "br": (int(page_width * 0.75), page_width, int(page_height * 0.75), page_height),
     }
-    
-    # Store all valid candidates for each corner
-    corner_candidates = {"tl": [], "tr": [], "bl": [], "br": []}
 
-    # Find all contours that have the shape properties of a cross.
-    shape_candidates = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        x, y, w, h = cv2.boundingRect(c)
-        aspect_ratio = w / float(h) if h > 0 else 0
-        if not (0.4 < aspect_ratio < 2.5):
-            continue
-            
-        hull = cv2.convexHull(c)
-        if hull.shape[0] < 3: continue
-        hull_area = cv2.contourArea(hull)
-        solidity = area / float(hull_area) if hull_area > 0 else 0
-        if solidity > 0.6:
-            continue
-
-        M = cv2.moments(c)
-        if M["m00"] == 0: continue
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        shape_candidates.append({'cx': cx, 'cy': cy, 'area': area})
-
-    # Sort the shape candidates by area, largest first.
-    shape_candidates.sort(key=lambda c: c['area'], reverse=True)
-
-    # Assume the fiducials are among the top 10 largest cross-like shapes.
-    top_candidates = shape_candidates[:10]
+    template = _fiducial_template_for(image)
+    template_height, template_width = template.shape[:2]
+    match_threshold = 0.40
 
     if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
         debug_img_candidates = image.copy()
-        for cand in top_candidates:
-             cv2.circle(debug_img_candidates, (cand['cx'], cand['cy']), 20, (0, 128, 255), 2)
 
-    for cand in top_candidates:
-        cx, cy = cand['cx'], cand['cy']
-        for name, (x_min, x_max, y_min, y_max) in corner_regions.items():
-            if (x_min < cx < x_max) and (y_min < cy < y_max):
-                corner_candidates[name].append((cx, cy))
-                break
-    
+    final_corners = {}
+    match_scores = {}
+    for name, (x_min, x_max, y_min, y_max) in corner_regions.items():
+        roi = thresh[y_min:y_max, x_min:x_max]
+        if roi.shape[0] < template_height or roi.shape[1] < template_width:
+            final_corners[name] = None
+            match_scores[name] = 0
+            continue
+
+        result = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+        _, max_value, _, max_location = cv2.minMaxLoc(result)
+        match_scores[name] = max_value
+
+        center = (
+            int(x_min + max_location[0] + template_width / 2),
+            int(y_min + max_location[1] + template_height / 2),
+        )
+        final_corners[name] = center if max_value >= match_threshold else None
+
+        if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
+            color = (0, 128, 255) if max_value >= match_threshold else (0, 0, 255)
+            cv2.circle(debug_img_candidates, center, 20, color, 2)
+            cv2.putText(
+                debug_img_candidates,
+                f"{name}:{max_value:.2f}",
+                (center[0] + 24, center[1] + 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+            )
+
     if debug_dir and page_number and logging.getLogger().isEnabledFor(logging.DEBUG):
         cv2.imwrite(os.path.join(debug_dir, f"page_{page_number}_2_candidates.png"), debug_img_candidates)
-
-    # --- Select the best candidate for each corner ---
-    # The best candidate is the one closest to the actual page corner.
-    final_corners = {}
-    page_corners = {
-        "tl": (0, 0), "tr": (page_width, 0),
-        "bl": (0, page_height), "br": (page_width, page_height)
-    }
-    
-    for name, candidates in corner_candidates.items():
-        if not candidates:
-            final_corners[name] = None
-            continue
-        
-        page_corner_x, page_corner_y = page_corners[name]
-        
-        # Calculate distance from the page corner for each candidate
-        best_candidate = min(
-            candidates,
-            key=lambda p: np.sqrt((p[0] - page_corner_x)**2 + (p[1] - page_corner_y)**2)
-        )
-        final_corners[name] = best_candidate
 
     tl, tr, bl, br = final_corners["tl"], final_corners["tr"], final_corners["bl"], final_corners["br"]
 
     if not all([tl, tr, bl, br]):
-        logging.warning(f"Could not find all 4 corner fiducial markers. Found: TL={bool(tl)}, TR={bool(tr)}, BL={bool(bl)}, BR={bool(br)}")
+        logging.warning(
+            "Could not find all 4 corner fiducial markers. Found: TL=%s, TR=%s, BL=%s, BR=%s. Scores: %s",
+            bool(tl),
+            bool(tr),
+            bool(bl),
+            bool(br),
+            {k: round(v, 3) for k, v in match_scores.items()},
+        )
         return None
         
     logging.info("Successfully found 4 fiducial markers.")
