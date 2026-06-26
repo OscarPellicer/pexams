@@ -29,6 +29,10 @@ def normalize_name(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_student_id(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
 def name_order_variants(name: str) -> List[str]:
     normalized = normalize_name(name)
     tokens = normalized.split()
@@ -81,6 +85,41 @@ def common_prefix_len(a: str, b: str) -> int:
             break
         count += 1
     return count
+
+
+def _best_id_match(
+    ocr_student_id: str,
+    candidates: Iterable[dict],
+    id_column: str,
+    name_column: str,
+    threshold: float = 80.0,
+) -> Tuple[Optional[dict], str, float]:
+    normalized_ocr_id = normalize_student_id(ocr_student_id)
+    if len(normalized_ocr_id) < 4:
+        return None, "unmatched", 0.0
+
+    best_row = None
+    best_score = 0.0
+    for candidate in candidates:
+        for column, value in candidate.items():
+            if column == name_column:
+                continue
+
+            normalized_value = normalize_student_id(value)
+            if len(normalized_value) < 4:
+                continue
+
+            if normalized_value == normalized_ocr_id:
+                return candidate, "id-exact", 100.0
+
+            score = levenshtein_ratio(normalized_ocr_id, normalized_value)
+            if score > best_score:
+                best_row = candidate
+                best_score = score
+
+    if best_row is not None and best_score >= threshold:
+        return best_row, "id-fuzzy", best_score
+    return None, "unmatched", best_score
 
 
 def token_name_similarity(query_key: str, candidate_key: str) -> float:
@@ -186,6 +225,32 @@ def match_scanned_students(
         scanned_id = str(result.get("scanned_id", "")).strip()
         ocr_student_id = str(result.get("ocr_student_id", "")).strip()
         ocr_student_name = str(result.get("ocr_student_name", "")).strip()
+
+        # A sheet may contain a Moodle username while the requested output ID
+        # is a separate institutional identifier. Match OCR IDs/usernames
+        # against any non-name roster column, but keep returning the configured
+        # id_column so downstream marks and feedback use Moodle's expected key.
+        id_row, id_match_type, id_score = _best_id_match(
+            ocr_student_id,
+            unmatched_roster,
+            id_column=id_column,
+            name_column=name_column,
+        )
+        if id_row is not None:
+            unmatched_roster.remove(id_row)
+            matches.append(
+                StudentMatch(
+                    scanned_id=scanned_id,
+                    ocr_student_id=ocr_student_id,
+                    ocr_student_name=ocr_student_name,
+                    roster_student_id=str(id_row.get(id_column, "")).strip(),
+                    roster_student_name=str(id_row.get(name_column, "")).strip(),
+                    match_type=id_match_type,
+                    match_score=id_score,
+                )
+            )
+            continue
+
         row, match_type, score = _best_name_match(
             ocr_student_name,
             unmatched_roster,
