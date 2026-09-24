@@ -1,3 +1,4 @@
+import base64
 import logging
 import re
 import json
@@ -213,13 +214,18 @@ def _generate_questions_markdown(
         question_style = f' style="font-size: {q.font_size};"' if q.font_size else ""
         md_parts.append(f'\n<div class="{" ".join(question_classes)}" data-question-id="{q.id}"{question_style}>\n')
 
-        # Convert question text to HTML, ensuring it's treated as a single paragraph block
-        question_text_html = markdown.markdown(q.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
-        # Remove paragraph tags that markdown lib might add
-        if question_text_html.startswith("<p>"):
-            question_text_html = question_text_html[3:-4]
+        # Convert question text to HTML. Single newlines become <br> (nl2br), while blank lines
+        # keep separate blocks, so display math ($$...$$ in its own paragraph) is recognised.
+        question_text_html = markdown.markdown(q.text, extensions=extensions + ['nl2br'], extension_configs=extension_configs).strip()
+        number_html = f"<b>{q.id}.</b> "
+        if question_text_html.startswith("<p>") and question_text_html.endswith("</p>") and question_text_html.count("<p>") == 1:
+            question_text_html = number_html + question_text_html[3:-4]
+        elif question_text_html.startswith("<p>"):
+            question_text_html = question_text_html.replace("<p>", "<p>" + number_html, 1)
+        else:
+            question_text_html = number_html + question_text_html
         
-        md_parts.append(f'<div class="question-text"><b>{q.id}.</b> {question_text_html}</div>\n')
+        md_parts.append(f'<div class="question-text">{question_text_html}</div>\n')
         
         if q.image_source:
             # Convert the path to a file URI to be safe for HTML rendering
@@ -268,6 +274,42 @@ def _generate_questions_markdown(
 PX_PER_MM_CSS = 96 / 25.4
 PRINT_CONTENT_WIDTH_MM = 180  # A4 width (210mm) minus 15mm margins
 PRINT_CONTENT_HEIGHT_MM = 267  # A4 height (297mm) minus 15mm margins
+
+
+def _wrap_pages_with_header_footer(page, header_text: str, footer_prefix: str) -> int:
+    """Wraps each page container in an A4 sheet (15mm margins) with its own header and footer."""
+    return page.evaluate(
+        """([headerText, footerPrefix]) => {
+            const style = document.createElement('style');
+            style.textContent = `
+                @page { size: A4; margin: 0; }
+                body { margin: 0; }
+                .pexams-sheet { position: relative; width: 210mm; height: 297mm; padding: 15mm;
+                                box-sizing: border-box; overflow: hidden; break-after: page; }
+                .pexams-sheet.last { break-after: auto; }
+                .pexams-sheet > .page-container { break-after: auto !important; page-break-after: auto !important; }
+                .pexams-running { position: absolute; left: 15mm; right: 15mm; text-align: center;
+                                  font-size: 9px; line-height: 1.2; color: #888; white-space: nowrap;
+                                  overflow: hidden; text-overflow: ellipsis; }`;
+            document.head.appendChild(style);
+            const containers = Array.from(document.body.children).filter((el) => el.classList.contains('page-container'));
+            containers.forEach((container, index) => {
+                const sheet = document.createElement('div');
+                sheet.className = 'pexams-sheet' + (index === containers.length - 1 ? ' last' : '');
+                container.parentNode.insertBefore(sheet, container);
+                sheet.appendChild(container);
+                for (const [edge, text] of [['top', headerText], ['bottom', `${footerPrefix} - Page ${index + 1} of ${containers.length}`]]) {
+                    const running = document.createElement('div');
+                    running.className = 'pexams-running';
+                    running.style[edge] = '6mm';
+                    running.textContent = text;
+                    sheet.appendChild(running);
+                }
+            });
+            return containers.length;
+        }""",
+        [header_text, footer_prefix],
+    )
 
 
 def _keep_questions_within_pages(page) -> int:
@@ -635,20 +677,26 @@ def generate_exams(
                 open_answer_areas.extend(_extract_open_answer_area_metadata(page, model_questions, i))
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
-                
-                # Ensure header text fits in one line with ellipsis for the PDF header
-                # Note: PDF header styling is limited, simple truncation is safest
-                header_style = 'font-family: Open Sans, sans-serif; font-size: 9px; color: #888; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 10px;'
+                footer_prefix = f"Model {i}"
 
-                page.pdf(
-                    path=pdf_filepath,
-                    format='A4',
-                    print_background=True,
-                    margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
-                    display_header_footer=True,
-                    header_template=f'<div style="{header_style}">{header_text}</div>',
-                    footer_template=f'<div style="font-family: Open Sans, sans-serif; font-size: 9px; color: #888; width: 100%; text-align: center;">Model {i} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>'
-                )
+                if columns == 1:
+                    # Every printed page is now its own container: draw header and footer inside
+                    # each A4 sheet so they use the exam font. Chromium's header/footer templates
+                    # cannot load web or embedded fonts and fall back to Times.
+                    _wrap_pages_with_header_footer(page, header_text, footer_prefix)
+                    page.pdf(path=pdf_filepath, format='A4', print_background=True, prefer_css_page_size=True,
+                             margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
+                else:
+                    header_style = 'font-size: 9px; color: #888; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 10px; font-family: Arial, sans-serif;'
+                    page.pdf(
+                        path=pdf_filepath,
+                        format='A4',
+                        print_background=True,
+                        margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
+                        display_header_footer=True,
+                        header_template=f'<div style="{header_style}">{header_text}</div>',
+                        footer_template=f'<div style="{header_style}">{footer_prefix} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>'
+                    )
                 browser.close()
             logging.info(f"Successfully generated PDF for model {i}: {pdf_filepath}")
             generated_pdfs.append(pdf_filepath)
