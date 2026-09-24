@@ -97,8 +97,8 @@ def main():
         help="Fuzzy matching threshold (0-100) for matching OCR student names to --input-csv before analysis.")
     correct_parser.add_argument( "--use-llm-name-ocr", action="store_true",
         help="Use OpenRouter vision OCR for student names before roster matching. Default: local OCR only.")
-    correct_parser.add_argument( "--openrouter-name-model", type=str, default="google/gemini-3-flash-preview",
-        help="OpenRouter vision model for --use-llm-name-ocr. Default: google/gemini-3-flash-preview.")
+    correct_parser.add_argument( "--openrouter-name-model", type=str, default="google/gemini-3.8-flash",
+        help="OpenRouter vision model for --use-llm-name-ocr. Default: google/gemini-3.8-flash.")
     correct_parser.add_argument( "--penalty", type=float, default=0.0,
         help="Score penalty for wrong answers (positive float, e.g. 0.33333). Default is 0.0.")
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",

@@ -30,6 +30,12 @@ from pexams.student_matching import match_scanned_students
 from pathlib import Path
 
 
+
+def openrouter_extra_body(model_name):
+    """Gemini Flash models on OpenRouter reason by default and cannot disable it; the
+    minimal effort avoids paying for (and waiting on) reasoning tokens."""
+    return {"reasoning": {"effort": "minimal"}} if "flash" in str(model_name).lower() else {}
+
 def load_trocr_processor(model_name):
     """Loads the TrOCR processor. With transformers>=5 the automatic tokenizer resolution
     of the TrOCR checkpoints fails (it asks for sentencepiece/tiktoken), so the processor is
@@ -373,6 +379,7 @@ def _ocr_student_name_openrouter(
         client = openai.OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
         response = client.chat.completions.create(
             model=model_name,
+            extra_body=openrouter_extra_body(model_name),
             messages=[
                 {"role": "system", "content": "Read handwritten or printed student names from exam forms. Return only the name text."},
                 {
@@ -558,7 +565,7 @@ def correct_exams(
     roster_sep: str = ",",
     name_match_threshold: float = 70.0,
     use_llm_name_ocr: bool = False,
-    openrouter_name_model: str = "google/gemini-3-flash-preview",
+    openrouter_name_model: str = "google/gemini-3.8-flash",
 ) -> bool:
     if not OPENCV_AVAILABLE:
         logging.critical("Required libraries (OpenCV, etc.) are not installed.")

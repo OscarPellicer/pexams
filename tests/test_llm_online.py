@@ -41,7 +41,7 @@ def test_openrouter_student_name_ocr_reads_printed_name():
         cv2.LINE_AA,
     )
 
-    model = os.getenv("PEXAMS_LLM_NAME_OCR_MODEL", "google/gemini-3-flash-preview")
+    model = os.getenv("PEXAMS_LLM_NAME_OCR_MODEL", "google/gemini-3.8-flash")
     detected = _ocr_student_name_openrouter(sheet, layout, px_per_mm, model_name=model)
 
     normalized = detected.lower()
