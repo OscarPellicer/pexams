@@ -257,7 +257,7 @@ pexams correct \
 - `--fuzzy-id-match <0-100>`: Threshold for fuzzy matching of IDs (default 100 = exact match only).
 - `--name-match-threshold <0-100>`: When `--input-csv` and `--name-column` are provided, scanned exams are matched to the roster by OCR'd student name before analysis. If any scan cannot be matched, `pexams` writes `student_matches.csv` and stops before producing named artifacts or reports.
 - `--use-llm-name-ocr`: Use OpenRouter vision OCR for the student-name box before roster matching. By default, local OCR is used.
-- `--openrouter-name-model <model>`: Model used by `--use-llm-name-ocr` (default `google/gemini-3-flash-preview`).
+- `--openrouter-name-model <model>`: Model used by `--use-llm-name-ocr` (default `google/gemini-3.8-flash`).
 - `--input-encoding <str>`: Encoding of the input CSV file (default `utf-8`). Useful if you encounter encoding errors, in which case you can try `latin1` or `utf-8-sig`.
 - `--input-sep <str>`: Separator for the input CSV file (default `,`). If your CSV uses semicolons (common in Europe), pass `--input-sep semi` or `--input-sep ";"`.
 - `--output-decimal-sep <str>`: Decimal separator for the output marks (default `.`). Use `,` if your locale requires comma decimals (e.g., `--output-decimal-sep ","`).
