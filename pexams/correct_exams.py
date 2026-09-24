@@ -30,6 +30,20 @@ from pexams.student_matching import match_scanned_students
 from pathlib import Path
 
 
+def load_trocr_processor(model_name):
+    """Loads the TrOCR processor. With transformers>=5 the automatic tokenizer resolution
+    of the TrOCR checkpoints fails (it asks for sentencepiece/tiktoken), so the processor is
+    assembled from its RoBERTa BPE tokenizer and image processor instead."""
+    try:
+        return TrOCRProcessor.from_pretrained(model_name)
+    except ValueError:
+        from transformers import AutoImageProcessor, RobertaTokenizer
+        return TrOCRProcessor(
+            image_processor=AutoImageProcessor.from_pretrained(model_name),
+            tokenizer=RobertaTokenizer.from_pretrained(model_name),
+        )
+
+
 def _load_simulated_scan_manifest(input_path: str) -> Dict[str, dict]:
     manifest_path = os.path.join(input_path, "simulated_scan_manifest.json")
     if not os.path.isdir(input_path) or not os.path.exists(manifest_path):
@@ -601,7 +615,7 @@ def correct_exams(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logging.info(f"Using device: {device} for OCR.")
     try:
-        processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
+        processor = load_trocr_processor("microsoft/trocr-base-printed")
         model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed").to(device)
     except Exception as e:
         logging.error(f"Failed to initialize TrOCR model: {e}")
@@ -617,9 +631,22 @@ def correct_exams(
     dummy_options = [PexamOption(text=f'{i}', is_correct=(i==0)) for i in range(5)]
     dummy_question = PexamQuestion(id=1, text='d', options=dummy_options)
 
+    # Question pages carry fiducial markers too (needed to rectify open answers), so after an
+    # answer sheet the remaining pages of that exam must not be read as new answer sheets.
+    exam_pages_per_model = {}
+    areas_path = Path(questions_dir) / "open_answer_areas.json" if questions_dir else None
+    if areas_path and areas_path.exists():
+        for area in json.loads(areas_path.read_text(encoding="utf-8")):
+            model_key = str(area.get("model_id"))
+            exam_pages_per_model[model_key] = max(exam_pages_per_model.get(model_key, 1), int(area.get("page_index", 1)))
+    skip_until_page = 0
+
     for i, frame in enumerate(images_to_process):
         page_number = i + 1
         source_path = image_sources[i] if i < len(image_sources) else ""
+        if page_number <= skip_until_page:
+            logging.info(f"Page {page_number} belongs to the previous exam (response pages). Skipping answer-sheet detection.")
+            continue
         logging.info(f"Processing page {page_number}...")
         
         marker_corners = _find_fiducial_markers(frame, debug_dir, page_number)
@@ -638,6 +665,7 @@ def correct_exams(
             continue
         
         logging.info(f"Page {page_number}: Detected Model ID '{model_id}'.")
+        skip_until_page = page_number + exam_pages_per_model.get(str(model_id), 1) - 1
         solutions = solutions_per_model[model_id]
 
         questions_path = Path(questions_dir) / f"exam_model_{model_id}_questions.json"

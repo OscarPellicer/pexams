@@ -219,7 +219,8 @@ h2 { font-size: 12pt; }
 
 .questions-page .questions-container {
     box-sizing: border-box;
-    padding: 8mm 2mm 2mm 2mm;
+    /* Top padding keeps the first line clear of the 8mm corner markers. */
+    padding: 11mm 2mm 2mm 2mm;
 }
 
 .questions-container.two-columns {
