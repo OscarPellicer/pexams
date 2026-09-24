@@ -265,6 +265,60 @@ def _generate_questions_markdown(
     return "\n".join(md_parts)
 
 
+PX_PER_MM_CSS = 96 / 25.4
+PRINT_CONTENT_WIDTH_MM = 180  # A4 width (210mm) minus 15mm margins
+PRINT_CONTENT_HEIGHT_MM = 267  # A4 height (297mm) minus 15mm margins
+
+
+def _keep_questions_within_pages(page) -> int:
+    """Splits the questions into one fixed-height container per printed page.
+
+    A single tall container is fragmented by Chromium's print engine in ways that
+    getBoundingClientRect cannot report, so boxes ended up split across pages and the
+    open-answer coordinates drifted. Instead, questions are distributed over page-sized
+    containers (like the answer sheet): no question or open-answer box crosses a page,
+    every page carries its own four fiducial markers, and measured coordinates are the
+    printed ones. Returns the number of question pages.
+    """
+    return page.evaluate(
+        """([pageHeightMm, bottomReserveMm]) => {
+            const mm = 96 / 25.4;
+            const limit = (pageHeightMm - bottomReserveMm) * mm;
+            const original = document.querySelector('.questions-page');
+            if (!original) return 0;
+            const originalContent = original.querySelector('.questions-container');
+            const items = Array.from(originalContent.children);
+            const template = original.cloneNode(true);
+            template.querySelector('.questions-container').innerHTML = '';
+            const pages = [];
+            const newPage = () => {
+                const pageEl = template.cloneNode(true);
+                pageEl.style.height = pageHeightMm + 'mm';
+                pageEl.style.minHeight = '0';
+                pageEl.style.overflow = 'hidden';
+                pageEl.style.pageBreakAfter = 'always';
+                original.parentNode.insertBefore(pageEl, original);
+                pages.push(pageEl);
+                return pageEl.querySelector('.questions-container');
+            };
+            let current = newPage();
+            for (const item of items) {
+                current.appendChild(item);
+                const pageTop = pages[pages.length - 1].getBoundingClientRect().top;
+                const bottom = item.getBoundingClientRect().bottom - pageTop;
+                if (bottom > limit && current.children.length > 1) {
+                    current = newPage();
+                    current.appendChild(item);
+                }
+            }
+            original.remove();
+            pages[pages.length - 1].style.pageBreakAfter = 'auto';
+            return pages.length;
+        }""",
+        [PRINT_CONTENT_HEIGHT_MM, 14],
+    )
+
+
 def _extract_open_answer_area_metadata(page, model_questions: List[PexamQuestion], exam_model: int) -> List[dict]:
     """Read rendered open-answer box positions from the browser page."""
     question_lookup = {str(q.id): q for q in model_questions}
@@ -296,9 +350,11 @@ def _extract_open_answer_area_metadata(page, model_questions: List[PexamQuestion
             "model_id": str(exam_model),
             "question_id": box["question_id"],
             "original_id": str(question.original_id) if question and question.original_id is not None else None,
-            "page_index": int(box["page_index"]),
+            # y is measured from the top of a (possibly multi-page) container: convert it to
+            # the printed page and the offset within that page.
+            "page_index": int(box["page_index"]) + int(float(box["y_mm"]) // PRINT_CONTENT_HEIGHT_MM),
             "x_mm": round(float(box["x_mm"]), 3),
-            "y_mm": round(float(box["y_mm"]), 3),
+            "y_mm": round(float(box["y_mm"]) % PRINT_CONTENT_HEIGHT_MM, 3),
             "width_mm": round(float(box["width_mm"]), 3),
             "height_mm": round(float(box["height_mm"]), 3),
             "lines": int(box["lines"]),
@@ -568,6 +624,14 @@ def generate_exams(
 
                 # A definitive wait to ensure all rendering is complete.
                 page.wait_for_timeout(1000)
+                # Lay the page out exactly as it will be printed (A4 content width, print media),
+                # keep questions and answer boxes from crossing page breaks, and only then
+                # measure the open-answer areas so their coordinates match the printed pages.
+                page.emulate_media(media="print")
+                page.set_viewport_size({"width": round(PRINT_CONTENT_WIDTH_MM * PX_PER_MM_CSS), "height": 1200})
+                if columns == 1:
+                    n_pages = _keep_questions_within_pages(page)
+                    logging.info(f"Questions laid out on {n_pages} page(s) with per-page fiducial markers.")
                 open_answer_areas.extend(_extract_open_answer_area_metadata(page, model_questions, i))
                 
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title

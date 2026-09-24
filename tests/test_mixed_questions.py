@@ -232,7 +232,15 @@ def test_generate_mixed_exam_writes_open_answer_area_metadata(tmp_path, monkeypa
         def goto(self, *args, **kwargs):
             return None
 
-        def evaluate(self, script):
+        def emulate_media(self, **kwargs):
+            return None
+
+        def set_viewport_size(self, *args, **kwargs):
+            return None
+
+        def evaluate(self, script, arg=None):
+            if arg is not None:  # per-page layout pass
+                return 1
             self.evaluate_calls += 1
             if self.evaluate_calls == 1:
                 return None

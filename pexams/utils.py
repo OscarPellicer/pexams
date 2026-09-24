@@ -42,7 +42,19 @@ def shuffle_questions_list(questions: List[PexamQuestion]) -> List[PexamQuestion
     but renumbering still happens.
     """
     if _rng_questions is not None:
-        _rng_questions.shuffle(questions)
+        # Shuffle within each question type and keep the slots where each type was:
+        # in mixed exams the open-answer block stays where the author put it and the
+        # multiple-choice numbering on the answer sheet stays contiguous.
+        slots = {}
+        for index, question in enumerate(questions):
+            slots.setdefault(question.question_type, []).append(index)
+        reordered = list(questions)
+        for positions in slots.values():
+            group = [questions[i] for i in positions]
+            _rng_questions.shuffle(group)
+            for position, question in zip(positions, group):
+                reordered[position] = question
+        questions[:] = reordered
     
     # Renumber
     for i, q in enumerate(questions, 1):
