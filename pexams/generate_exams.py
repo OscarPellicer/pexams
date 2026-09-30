@@ -69,9 +69,15 @@ def _generate_answer_sheet_html(
     exam_title: str,
     exam_course: Optional[str],
     exam_date: Optional[str],
-    lang: str = "en"
+    lang: str = "en",
+    header_only: bool = False,
 ) -> str:
-    """Generates the pure HTML for the answer sheet with absolutely positioned elements."""
+    """Generates the pure HTML for the answer sheet with absolutely positioned elements.
+
+    With ``header_only`` only the title, model box and student fields are returned (no
+    instructions or answer grid), at the same coordinates as on the answer sheet, so they
+    can be placed at the top of the first question page and still be read by the corrector.
+    """
 
     selected_lang = LANG_STRINGS.get(lang, LANG_STRINGS["en"])
     
@@ -132,6 +138,10 @@ def _generate_answer_sheet_html(
     h_ssb = ssb_coords.bottom_right[1] - y_ssb
     style_sig_box = f"position: absolute; left: {x_ssb}mm; top: {y_ssb}mm; width: {w_ssb}mm; height: {h_ssb}mm;"
     html_elements.append(f'<div class="student-signature-box" style="{style_sig_box}"></div>')
+
+    if header_only:
+        all_elements_html = "\n".join(html_elements)
+        return f'<div class="first-page-header">\n{all_elements_html}\n</div>'
 
     # --- Instructions ---
     example_correct_html = '<div class="example-box correct"></div>'
@@ -245,10 +255,11 @@ def _generate_questions_markdown(
             height_style = f"min-height: {max(1, q.answer_area.lines) * 7 + 6}mm;"
             if q.answer_area.height_mm is not None:
                 height_style = f"height: {q.answer_area.height_mm}mm;"
-            line_count = max(1, q.answer_area.lines)
+            # Fractional lines only enlarge the box; guide lines are drawn for whole lines.
+            line_count = max(1, int(q.answer_area.lines))
             md_parts.append(
                 f'<div class="open-answer-box" data-question-id="{q.id}" '
-                f'data-lines="{line_count}" style="{height_style}">'
+                f'data-lines="{q.answer_area.lines:g}" style="{height_style}">'
             )
             if q.answer_area.show_lines:
                 for _ in range(line_count):
@@ -330,6 +341,11 @@ def _keep_questions_within_pages(page) -> int:
             if (!original) return 0;
             const originalContent = original.querySelector('.questions-container');
             const items = Array.from(originalContent.children);
+            // The student header and its spacer (exams without answer sheet) belong to the first page only.
+            const firstPageHeader = original.querySelector('.first-page-header');
+            const firstPageSpacer = original.querySelector('.first-page-header-spacer');
+            if (firstPageHeader) firstPageHeader.remove();
+            if (firstPageSpacer) firstPageSpacer.remove();
             const template = original.cloneNode(true);
             template.querySelector('.questions-container').innerHTML = '';
             const pages = [];
@@ -344,6 +360,8 @@ def _keep_questions_within_pages(page) -> int:
                 return pageEl.querySelector('.questions-container');
             };
             let current = newPage();
+            if (firstPageHeader) pages[0].appendChild(firstPageHeader);
+            if (firstPageSpacer) pages[0].insertBefore(firstPageSpacer, current);
             for (const item of items) {
                 current.appendChild(item);
                 const pageTop = pages[pages.length - 1].getBoundingClientRect().top;
@@ -399,7 +417,7 @@ def _extract_open_answer_area_metadata(page, model_questions: List[PexamQuestion
             "y_mm": round(float(box["y_mm"]) % PRINT_CONTENT_HEIGHT_MM, 3),
             "width_mm": round(float(box["width_mm"]), 3),
             "height_mm": round(float(box["height_mm"]), 3),
-            "lines": int(box["lines"]),
+            "lines": float(box["lines"]),
             "points": float(question.points) if question else None,
         })
     return metadata
@@ -600,14 +618,31 @@ def generate_exams(
         logging.info(f"Saved questions for model {i} to: {questions_json_path}")
 
         model_mc_questions = [q for q in model_questions if q.is_multiple_choice]
+        # Without multiple-choice questions there is nothing to mark on an answer sheet: the
+        # student header goes at the top of the first question page instead, saving the answer
+        # sheet and the blank page after it. It keeps the answer-sheet coordinates, so the
+        # corrector reads the model, ID and name from the first page as usual.
+        header_on_first_page = not model_mc_questions
         answer_sheet_html = _generate_answer_sheet_html(
             model_mc_questions,
-            i, 
+            i,
             exam_title=exam_title,
             exam_course=exam_course,
             exam_date=exam_date,
-            lang=lang
+            lang=lang,
+            header_only=header_on_first_page,
         )
+        if header_on_first_page:
+            first_page_header_html = answer_sheet_html
+            # Push the questions (all columns) below the student boxes; the container adds its 11mm top padding.
+            header_bottom_mm = layout.STUDENT_NAME_BOX_TL[1] + layout.STUDENT_NAME_BOX_HEIGHT
+            spacer_html = f'<div class="first-page-header-spacer" style="height: {header_bottom_mm + 5 - 11}mm;"></div>'
+            pages_before_questions_html = ""
+        else:
+            first_page_header_html = ""
+            spacer_html = ""
+            pages_before_questions_html = f"""{answer_sheet_html}
+    <div class="page-container" style="page-break-after: always;"></div>"""
         questions_md = _generate_questions_markdown(model_questions)
         questions_html = markdown.markdown(questions_md)
         if markdown_asset_base_dir:
@@ -630,13 +665,14 @@ def generate_exams(
     </style>
 </head>
 <body>
-    {answer_sheet_html}
-    <div class="page-container" style="page-break-after: always;"></div>
+    {pages_before_questions_html}
     <div class="page-container questions-page">
         <div class="fiducial top-left"></div>
         <div class="fiducial top-right"></div>
         <div class="fiducial bottom-left"></div>
         <div class="fiducial bottom-right"></div>
+        {first_page_header_html}
+        {spacer_html}
         <div class="questions-container {column_class}">
         {custom_header_html}
         {questions_html}

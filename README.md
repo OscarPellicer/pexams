@@ -147,7 +147,7 @@ Optional explanation text...
 
 ### Mixed exams with open-answer questions
 
-Open-answer questions are declared in the question header. The `lines` value reserves vertical space; guide lines are hidden by default and can be enabled per question with `show_lines=true`.
+Open-answer questions are declared in the question header. The `lines` value reserves vertical space (7 mm per line, fractional values such as `lines=8.5` are allowed); guide lines are hidden by default and can be enabled per question with `show_lines=true`.
 
 ```markdown
 ## mc_1 {points=2 font_size=9pt}
@@ -164,6 +164,8 @@ Regularization discourages overly complex models and can reduce overfitting.
 **Rubric:**
 2 points for model complexity, 1 for overfitting/generalization, 1 for train/validation contrast.
 ```
+
+If an exam has no multiple-choice questions, there is nothing to mark on an answer sheet: the student header (title, model, ID, name and signature) is printed at the top of the first question page instead, which saves the answer sheet and the blank page after it. The header keeps the answer-sheet coordinates, so correction works in the same way.
 
 When correcting scans, `pexams` writes `open_responses_index.csv` and cropped open-answer images under `open_responses/`. These artifacts are intended for `pevaluate exam-open`.
 
