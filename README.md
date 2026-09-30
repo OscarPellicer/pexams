@@ -167,6 +167,8 @@ Regularization discourages overly complex models and can reduce overfitting.
 
 If an exam has no multiple-choice questions, there is nothing to mark on an answer sheet: the student header (title, model, ID, name and signature) is printed at the top of the first question page instead, which saves the answer sheet and the blank page after it. The header keeps the answer-sheet coordinates, so correction works in the same way.
 
+Questions are laid out page by page with any number of columns (`--columns 1|2|3`): a question or open-answer box never crosses a page break, and every page carries its own four fiducial markers.
+
 When correcting scans, `pexams` writes `open_responses_index.csv` and cropped open-answer images under `open_responses/`. These artifacts are intended for `pevaluate exam-open`.
 
 ### 2. CLI commands
@@ -205,6 +207,7 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 - `--generate-references`: If set, generates a reference scan with the correct answers marked for each model.
 - `--custom-header <str>`: Markdown string or path to a Markdown file to insert before the questions (e.g., instructions).
 - `--mc-total-points <float>`: Assign a total value to all multiple-choice questions and distribute it evenly. Do not combine this with per-question non-default MC points.
+- `--fill-answer-space`: Grow the open-answer boxes of each page so they use the free space left at its bottom. Boxes with an explicit `height_mm` keep their size.
 
 ### Comprehensive Example
 
