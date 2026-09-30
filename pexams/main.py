@@ -147,6 +147,7 @@ def main():
     generate_parser.add_argument("--generate-references", action="store_true", help="Generate reference scan (pexams only).")
     generate_parser.add_argument("--custom-header", type=str, default=None, help="Markdown string or path to .md file to insert before questions.")
     generate_parser.add_argument("--mc-total-points", type=float, default=None, help="Total points assigned to all multiple-choice questions. Cannot be combined with per-question non-default MC points.")
+    generate_parser.add_argument("--fill-answer-space", action="store_true", help="Grow the open-answer boxes of each page to use the free space left at its bottom (pexams only).")
     generate_parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set the logging level.")
     
     # --- Correct-Online Command ---
@@ -419,7 +420,7 @@ def main():
                 logging.warning(f"Argument '--{name}' is ignored for format '{output_fmt}'.")
 
         # Arguments specific to pexams
-        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header", "mc_total_points"]
+        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header", "mc_total_points", "fill_answer_space"]
         for arg in pexams_args:
             check_arg(arg, ["pexams"])
             
@@ -443,6 +444,7 @@ def main():
                 custom_header=args.custom_header,
                 markdown_asset_base_dir=os.path.dirname(os.path.abspath(args.input_file)),
                 mc_total_points=args.mc_total_points,
+                fill_answer_space=args.fill_answer_space,
             )
         else:
             # For non-pexams formats, we apply the shuffling here before passing to converter.

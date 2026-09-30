@@ -257,9 +257,10 @@ def _generate_questions_markdown(
                 height_style = f"height: {q.answer_area.height_mm}mm;"
             # Fractional lines only enlarge the box; guide lines are drawn for whole lines.
             line_count = max(1, int(q.answer_area.lines))
+            fixed_height_attr = ' data-fixed-height="true"' if q.answer_area.height_mm is not None else ""
             md_parts.append(
                 f'<div class="open-answer-box" data-question-id="{q.id}" '
-                f'data-lines="{q.answer_area.lines:g}" style="{height_style}">'
+                f'data-lines="{q.answer_area.lines:g}"{fixed_height_attr} style="{height_style}">'
             )
             if q.answer_area.show_lines:
                 for _ in range(line_count):
@@ -323,7 +324,7 @@ def _wrap_pages_with_header_footer(page, header_text: str, footer_prefix: str) -
     )
 
 
-def _keep_questions_within_pages(page) -> int:
+def _keep_questions_within_pages(page, fill_answer_space: bool = False) -> int:
     """Splits the questions into one fixed-height container per printed page.
 
     A single tall container is fragmented by Chromium's print engine in ways that
@@ -331,10 +332,16 @@ def _keep_questions_within_pages(page) -> int:
     open-answer coordinates drifted. Instead, questions are distributed over page-sized
     containers (like the answer sheet): no question or open-answer box crosses a page,
     every page carries its own four fiducial markers, and measured coordinates are the
-    printed ones. Returns the number of question pages.
+    printed ones. Each container gets the height left on its page, so with several columns
+    a question that does not fit shows up below the page or in an extra column to the
+    right, and is moved to the next page.
+
+    With ``fill_answer_space`` the free space left at the bottom of each page is shared
+    equally among that page's open-answer boxes (except those with an explicit height).
+    Returns the number of question pages.
     """
     return page.evaluate(
-        """([pageHeightMm, bottomReserveMm]) => {
+        """([pageHeightMm, bottomReserveMm, fillAnswerSpace, fillMarginMm]) => {
             const mm = 96 / 25.4;
             const limit = (pageHeightMm - bottomReserveMm) * mm;
             const original = document.querySelector('.questions-page');
@@ -349,6 +356,15 @@ def _keep_questions_within_pages(page) -> int:
             const template = original.cloneNode(true);
             template.querySelector('.questions-container').innerHTML = '';
             const pages = [];
+            const usableBottom = (pageEl) => pageEl.getBoundingClientRect().top + limit;
+            const overflows = (pageEl, container) => {
+                const bottom = usableBottom(pageEl) + 1;
+                const right = container.getBoundingClientRect().right + 1;
+                return Array.from(container.children).some((child) => {
+                    const rect = child.getBoundingClientRect();
+                    return rect.bottom > bottom || rect.right > right;
+                });
+            };
             const newPage = () => {
                 const pageEl = template.cloneNode(true);
                 pageEl.style.height = pageHeightMm + 'mm';
@@ -357,25 +373,42 @@ def _keep_questions_within_pages(page) -> int:
                 pageEl.style.pageBreakAfter = 'always';
                 original.parentNode.insertBefore(pageEl, original);
                 pages.push(pageEl);
-                return pageEl.querySelector('.questions-container');
+                const container = pageEl.querySelector('.questions-container');
+                if (pages.length === 1 && firstPageSpacer) pageEl.insertBefore(firstPageSpacer, container);
+                const height = usableBottom(pageEl) - container.getBoundingClientRect().top;
+                container.style.height = Math.max(0, height) + 'px';
+                return container;
             };
             let current = newPage();
             if (firstPageHeader) pages[0].appendChild(firstPageHeader);
-            if (firstPageSpacer) pages[0].insertBefore(firstPageSpacer, current);
             for (const item of items) {
                 current.appendChild(item);
-                const pageTop = pages[pages.length - 1].getBoundingClientRect().top;
-                const bottom = item.getBoundingClientRect().bottom - pageTop;
-                if (bottom > limit && current.children.length > 1) {
+                // Check every item: adding one can rebalance the columns of the others.
+                if (current.children.length > 1 && overflows(pages[pages.length - 1], current)) {
                     current = newPage();
                     current.appendChild(item);
                 }
             }
             original.remove();
             pages[pages.length - 1].style.pageBreakAfter = 'auto';
+
+            if (fillAnswerSpace) {
+                for (const pageEl of pages) {
+                    const container = pageEl.querySelector('.questions-container');
+                    const boxes = Array.from(container.querySelectorAll('.open-answer-box:not([data-fixed-height])'));
+                    if (!boxes.length) continue;
+                    const contentBottom = Math.max(...Array.from(container.children).map((c) => c.getBoundingClientRect().bottom));
+                    const free = usableBottom(pageEl) - fillMarginMm * mm - contentBottom;
+                    if (free <= 0) continue;
+                    const heights = boxes.map((box) => box.getBoundingClientRect().height);
+                    const previous = boxes.map((box) => box.style.minHeight);
+                    boxes.forEach((box, i) => { box.style.minHeight = (heights[i] + free / boxes.length) + 'px'; });
+                    if (overflows(pageEl, container)) boxes.forEach((box, i) => { box.style.minHeight = previous[i]; });
+                }
+            }
             return pages.length;
         }""",
-        [PRINT_CONTENT_HEIGHT_MM, 14],
+        [PRINT_CONTENT_HEIGHT_MM, 14, fill_answer_space, 2],
     )
 
 
@@ -480,6 +513,7 @@ def generate_exams(
     custom_header: Optional[Union[str, Path]] = None,
     markdown_asset_base_dir: Optional[str] = None,
     mc_total_points: Optional[float] = None,
+    fill_answer_space: bool = False,
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
@@ -488,6 +522,9 @@ def generate_exams(
     markdown_asset_base_dir: Directory used to resolve relative paths in markdown images
     (e.g. ``![](fig.png)``) and similar ``src`` attributes to file:// URIs for PDF rendering.
     Typically the directory containing the source ``.md`` file.
+
+    fill_answer_space: Grow the open-answer boxes of each page to use the free space left
+    at its bottom (boxes with an explicit ``height_mm`` keep their size).
     """
     logging.info(f"Starting pexams PDF generation.")
     
@@ -707,32 +744,19 @@ def generate_exams(
                 # measure the open-answer areas so their coordinates match the printed pages.
                 page.emulate_media(media="print")
                 page.set_viewport_size({"width": round(PRINT_CONTENT_WIDTH_MM * PX_PER_MM_CSS), "height": 1200})
-                if columns == 1:
-                    n_pages = _keep_questions_within_pages(page)
-                    logging.info(f"Questions laid out on {n_pages} page(s) with per-page fiducial markers.")
+                n_pages = _keep_questions_within_pages(page, fill_answer_space=fill_answer_space)
+                logging.info(f"Questions laid out on {n_pages} page(s) with per-page fiducial markers.")
                 open_answer_areas.extend(_extract_open_answer_area_metadata(page, model_questions, i))
-                
+
                 header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
                 footer_prefix = f"Model {i}"
 
-                if columns == 1:
-                    # Every printed page is now its own container: draw header and footer inside
-                    # each A4 sheet so they use the exam font. Chromium's header/footer templates
-                    # cannot load web or embedded fonts and fall back to Times.
-                    _wrap_pages_with_header_footer(page, header_text, footer_prefix)
-                    page.pdf(path=pdf_filepath, format='A4', print_background=True, prefer_css_page_size=True,
-                             margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
-                else:
-                    header_style = 'font-size: 9px; color: #888; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 10px; font-family: Arial, sans-serif;'
-                    page.pdf(
-                        path=pdf_filepath,
-                        format='A4',
-                        print_background=True,
-                        margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
-                        display_header_footer=True,
-                        header_template=f'<div style="{header_style}">{header_text}</div>',
-                        footer_template=f'<div style="{header_style}">{footer_prefix} - Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>'
-                    )
+                # Every printed page is now its own container: draw header and footer inside
+                # each A4 sheet so they use the exam font. Chromium's header/footer templates
+                # cannot load web or embedded fonts and fall back to Times.
+                _wrap_pages_with_header_footer(page, header_text, footer_prefix)
+                page.pdf(path=pdf_filepath, format='A4', print_background=True, prefer_css_page_size=True,
+                         margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
                 browser.close()
             logging.info(f"Successfully generated PDF for model {i}: {pdf_filepath}")
             generated_pdfs.append(pdf_filepath)
