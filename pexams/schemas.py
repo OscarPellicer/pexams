@@ -9,7 +9,7 @@ class PexamOption(BaseModel):
 
 class PexamAnswerArea(BaseModel):
     """Layout hints for an open-answer response area."""
-    lines: int = Field(8, ge=1, description="Approximate number of answer lines to reserve.")
+    lines: float = Field(8, ge=1, description="Approximate number of answer lines to reserve (may be fractional, e.g. 8.5).")
     height_mm: Optional[float] = Field(None, gt=0, description="Exact answer box height in millimeters.")
     show_lines: bool = Field(False, description="Draw horizontal writing guide lines inside the answer box.")
 

@@ -45,16 +45,6 @@ def _parse_float_attr(attrs: dict, key: str, default: Optional[float] = None) ->
         return default
 
 
-def _parse_int_attr(attrs: dict, key: str, default: int) -> int:
-    if key not in attrs:
-        return default
-    try:
-        return int(attrs[key])
-    except (TypeError, ValueError):
-        logging.warning("Invalid integer value for '%s': %s", key, attrs[key])
-        return default
-
-
 def _parse_bool_attr(attrs: dict, key: str, default: bool = False) -> bool:
     if key not in attrs:
         return default
@@ -163,7 +153,7 @@ def load_questions_from_md(path: str) -> List[PexamQuestion]:
 
         question_type = _normalize_question_type(attrs.get("type"))
         points = _parse_float_attr(attrs, "points", 1.0) or 1.0
-        answer_lines = _parse_int_attr(attrs, "lines", 8)
+        answer_lines = _parse_float_attr(attrs, "lines", 8) or 8
         height_mm = _parse_float_attr(attrs, "height_mm")
         show_lines = _parse_bool_attr(attrs, "show_lines", False)
         font_size = attrs.get("font_size")
@@ -175,9 +165,9 @@ def load_questions_from_md(path: str) -> List[PexamQuestion]:
                 continue
 
             if answer_area_text:
-                line_match = re.search(r'lines\s*[:=]\s*(\d+)', answer_area_text, flags=re.IGNORECASE)
+                line_match = re.search(r'lines\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', answer_area_text, flags=re.IGNORECASE)
                 if line_match:
-                    answer_lines = int(line_match.group(1))
+                    answer_lines = float(line_match.group(1))
                 height_match = re.search(r'height_mm\s*[:=]\s*([0-9.]+)', answer_area_text, flags=re.IGNORECASE)
                 if height_match:
                     height_mm = float(height_match.group(1))
@@ -275,7 +265,7 @@ def save_questions_to_md(questions: List[PexamQuestion], output_file: str):
             if q.font_size:
                 attrs.append(f"font_size={q.font_size}")
             if q.is_open_answer:
-                attrs.append(f"lines={q.answer_area.lines}")
+                attrs.append(f"lines={q.answer_area.lines:g}")
                 if q.answer_area.show_lines:
                     attrs.append("show_lines=true")
                 if q.answer_area.height_mm is not None:

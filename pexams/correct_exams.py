@@ -586,9 +586,11 @@ def correct_exams(
     if os.path.isdir(input_path):
         logging.info("Input path is a directory, scanning for PNG/JPG images.")
         simulated_scan_manifest = _load_simulated_scan_manifest(input_path)
-        image_files = glob.glob(os.path.join(input_path, "*.png")) + \
-                      glob.glob(os.path.join(input_path, "*.jpg")) + \
-                      glob.glob(os.path.join(input_path, "*.jpeg"))
+        # glob returns files in arbitrary order; sort them so the pages of each exam are
+        # processed in sequence (response pages are located relative to the first page).
+        image_files = sorted(glob.glob(os.path.join(input_path, "*.png")) +
+                             glob.glob(os.path.join(input_path, "*.jpg")) +
+                             glob.glob(os.path.join(input_path, "*.jpeg")))
         
         for image_file in image_files:
             img = cv2.imread(image_file)
