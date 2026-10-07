@@ -601,7 +601,9 @@ def analyze_results(
                     student_correct += 1
                 elif is_answered:
                     if penalty > 0:
-                         student_score -= penalty
+                         # The penalty is a fraction of the question's value, so it scales with
+                         # per-question points (e.g. --mc-total-points) instead of being absolute.
+                         student_score -= penalty * question_points
                     student_incorrect += 1
                 else:
                     student_na += 1

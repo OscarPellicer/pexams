@@ -271,7 +271,7 @@ pexams correct \
 
 **Scoring Arguments:**
 
-- `--penalty <float>`: Score penalty for wrong answers (e.g., `0.33333`). Default is `0.0`. Formula: `score = correct_answers - (wrong_answers * penalty)`. Note that `wrong_answers` does not include blank/unanswered questions.
+- `--penalty <float>`: Penalty for each wrong answer, as a fraction of that question's points (e.g., `0.33333` subtracts a third of the question's value). Default is `0.0`. With 1-point questions: `score = correct_answers - (wrong_answers * penalty)`. Blank/unanswered questions are not penalized.
 
 **Other Arguments:**
 
