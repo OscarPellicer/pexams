@@ -538,7 +538,9 @@ def _extract_open_answer_responses(images_to_process: List[np.ndarray], page_res
                 "y_mm": area.get("y_mm"),
                 "width_mm": area.get("width_mm"),
                 "height_mm": area.get("height_mm"),
-                "crop_path": crop_path,
+                # Relative to the index CSV (saved in output_dir), so the folder stays portable
+                # and does not depend on the working directory used when correcting.
+                "crop_path": os.path.relpath(crop_path, output_dir),
             })
 
     if not index_rows:
