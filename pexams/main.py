@@ -100,7 +100,7 @@ def main():
     correct_parser.add_argument( "--openrouter-name-model", type=str, default="google/gemini-3.8-flash",
         help="OpenRouter vision model for --use-llm-name-ocr. Default: google/gemini-3.8-flash.")
     correct_parser.add_argument( "--penalty", type=float, default=0.0,
-        help="Score penalty for wrong answers (positive float, e.g. 0.33333). Default is 0.0.")
+        help="Penalty per wrong answer as a fraction of the question's points (e.g. 0.33333). Default is 0.0.")
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",
         help="Encoding of the input CSV file (default: utf-8).")
     correct_parser.add_argument( "--input-sep", type=str, default=",",
@@ -176,7 +176,7 @@ def main():
     )
     _online_common.add_argument(
         "--penalty", type=float, default=0.0,
-        help="Score penalty deducted per wrong answer (default: 0.0).",
+        help="Penalty per wrong answer as a fraction of the question's points (default: 0.0).",
     )
     _online_common.add_argument(
         "--encoding", default="auto",
