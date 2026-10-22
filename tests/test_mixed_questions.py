@@ -9,7 +9,7 @@ from pexams import layout
 from pexams import analysis
 from pexams import utils
 from pexams.correct_exams import _extract_open_answer_responses
-from pexams.generate_exams import _generate_questions_markdown, generate_exams
+from pexams.generate_exams import _format_points, _generate_questions_markdown, _should_show_points, generate_exams
 from pexams.io.md_converter import load_questions_from_md, save_questions_to_md
 from pexams.schemas import PexamOption, PexamQuestion
 from pexams.utils import create_solutions_from_questions
@@ -222,6 +222,41 @@ def test_question_markdown_renders_per_question_font_size():
     html = _generate_questions_markdown([question])
 
     assert 'style="font-size: 8pt;"' in html
+
+
+def _mc_question(qid, points=1.0):
+    return PexamQuestion(
+        id=qid,
+        text="Pick one",
+        points=points,
+        options=[PexamOption(text="A", is_correct=True), PexamOption(text="B", is_correct=False)],
+    )
+
+
+def test_question_markdown_prints_points_after_the_number():
+    question = PexamQuestion(id=3, question_type="open_answer", text="Explain.", points=1.5)
+
+    assert "[1.5 pt]" in _generate_questions_markdown([question], show_points=True)
+    assert "[1,5 pt]" in _generate_questions_markdown([question], show_points=True, lang="es")
+    assert "pt]" not in _generate_questions_markdown([question])
+
+
+def test_format_points_trims_trailing_zeros():
+    assert _format_points(2.0) == "[2 pt]"
+    assert _format_points(0.2) == "[0.2 pt]"
+    assert _format_points(9 / 25, lang="es") == "[0,36 pt]"
+
+
+def test_show_points_auto_only_when_points_tell_something():
+    open_question = PexamQuestion(id=3, question_type="open_answer", text="Explain.", points=1.5)
+
+    assert not _should_show_points([_mc_question(1), _mc_question(2)])
+    assert _should_show_points([_mc_question(1), _mc_question(2, points=2)])
+    assert _should_show_points([_mc_question(1), open_question])
+    assert _should_show_points([_mc_question(1)], "always")
+    assert not _should_show_points([_mc_question(1), open_question], "never")
+    with pytest.raises(ValueError):
+        _should_show_points([_mc_question(1)], "sometimes")
 
 
 def test_generate_mixed_exam_writes_open_answer_area_metadata(tmp_path, monkeypatch):

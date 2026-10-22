@@ -68,8 +68,9 @@ def main():
     # --- Correction Command ---
     correct_parser = subparsers.add_parser( "correct", formatter_class=argparse.RawTextHelpFormatter, 
         help="Correct scanned exam answer sheets from a PDF file or a folder of images.")
-    correct_parser.add_argument( "--input-path", type=str, required=False,
-        help="Path to the single PDF file or a folder containing scanned answer sheets as PNG/JPG images.")
+    correct_parser.add_argument( "--input-path", type=str, nargs="+", required=False,
+        help="One or more scanned PDFs and/or folders of PNG/JPG images or PDFs, read in the order given\n"
+             "(files inside a folder are sorted by name). Use it when a batch was scanned into several PDFs.")
     correct_parser.add_argument( "--exam-dir", type=str, required=True,
         help="Path to the directory containing exam models and solutions (e.g., the output from 'generate').")
     correct_parser.add_argument( "--output-dir", type=str, required=True,
@@ -96,9 +97,17 @@ def main():
     correct_parser.add_argument( "--name-match-threshold", type=float, default=70.0,
         help="Fuzzy matching threshold (0-100) for matching OCR student names to --input-csv before analysis.")
     correct_parser.add_argument( "--use-llm-name-ocr", action="store_true",
-        help="Use OpenRouter vision OCR for student names before roster matching. Default: local OCR only.")
+        help="Deprecated: same as --id-reader llm --id-reader-model <--openrouter-name-model>.")
     correct_parser.add_argument( "--openrouter-name-model", type=str, default="google/gemini-3.8-flash",
         help="OpenRouter vision model for --use-llm-name-ocr. Default: google/gemini-3.8-flash.")
+    correct_parser.add_argument( "--id-reader", choices=["llm", "trocr"], default="llm",
+        help="How to read the model, student-ID and name boxes: a vision LLM (default) or local TrOCR.")
+    correct_parser.add_argument( "--id-reader-model", type=str, default="claude-opus-5-5",
+        help="Model for --id-reader llm. Bare 'claude-...' ids use the Anthropic API; others use OpenRouter.")
+    correct_parser.add_argument( "--id-reader-effort", type=str, default="low",
+        help="Reasoning effort for --id-reader llm (low/medium/high; empty for the provider default).")
+    correct_parser.add_argument( "--api-key-env", type=str, default=None,
+        help="Environment variable holding the API key (default: ANTHROPIC_API_KEY or OPENROUTER_API_KEY).")
     correct_parser.add_argument( "--penalty", type=float, default=0.0,
         help="Penalty per wrong answer as a fraction of the question's points (e.g. 0.33333). Default is 0.0.")
     correct_parser.add_argument( "--input-encoding", type=str, default="utf-8",
@@ -148,6 +157,7 @@ def main():
     generate_parser.add_argument("--custom-header", type=str, default=None, help="Markdown string or path to .md file to insert before questions.")
     generate_parser.add_argument("--mc-total-points", type=float, default=None, help="Total points assigned to all multiple-choice questions. Cannot be combined with per-question non-default MC points.")
     generate_parser.add_argument("--fill-answer-space", action="store_true", help="Grow the open-answer boxes of each page to use the free space left at its bottom (pexams only).")
+    generate_parser.add_argument("--show-points", choices=["auto", "always", "never"], default="auto", help="Print each question's points, e.g. [1.5 pt], after its number. 'auto' (default) prints them when there are open-answer questions or questions of different value (pexams only).")
     generate_parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Set the logging level.")
     
     # --- Correct-Online Command ---
@@ -330,8 +340,9 @@ def main():
              if not args.input_path:
                 logging.error("the following arguments are required: --input-path (unless --only-analysis is used)")
                 return
-             if not os.path.exists(args.input_path):
-                logging.error(f"Input path not found: {args.input_path}")
+             missing = [p for p in args.input_path if not os.path.exists(p)]
+             if missing:
+                logging.error(f"Input path not found: {', '.join(missing)}")
                 return
              if not os.path.exists(args.exam_dir):
                 logging.error(f"Exam directory not found: {args.exam_dir}")
@@ -370,6 +381,10 @@ def main():
                 name_match_threshold=args.name_match_threshold,
                 use_llm_name_ocr=args.use_llm_name_ocr,
                 openrouter_name_model=args.openrouter_name_model,
+                id_reader="llm" if args.use_llm_name_ocr else args.id_reader,
+                id_reader_model=args.openrouter_name_model if args.use_llm_name_ocr else args.id_reader_model,
+                id_reader_effort=args.id_reader_effort or None,
+                api_key_env=args.api_key_env,
             )
         
         if correction_success:
@@ -420,7 +435,7 @@ def main():
                 logging.warning(f"Argument '--{name}' is ignored for format '{output_fmt}'.")
 
         # Arguments specific to pexams
-        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header", "mc_total_points", "fill_answer_space"]
+        pexams_args = ["num_models", "columns", "font_size", "total_students", "keep_html", "generate_fakes", "generate_references", "extra_model_templates", "custom_header", "mc_total_points", "fill_answer_space", "show_points"]
         for arg in pexams_args:
             check_arg(arg, ["pexams"])
             
@@ -445,6 +460,7 @@ def main():
                 markdown_asset_base_dir=os.path.dirname(os.path.abspath(args.input_file)),
                 mc_total_points=args.mc_total_points,
                 fill_answer_space=args.fill_answer_space,
+                show_points=args.show_points,
             )
         else:
             # For non-pexams formats, we apply the shuffling here before passing to converter.

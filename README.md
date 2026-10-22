@@ -44,7 +44,7 @@ The analysis module generates a detailed statistical report (PDF) including answ
   - Arrange questions in one, two, or three columns.
   - Adjust the base font size to fit your needs.
 - **Customizable answer sheet**:
-  - Student ID field is a single box for handwritten ID, using OCR.
+  - Student ID field is a single box for the handwritten ID, read by a vision LLM (or TrOCR).
   - Internationalization support for exam labels (supported: `en`, `es`, `ca`, `de`, `fr`, `it`, `nl`, `pt`, `ru`, `zh`, `ja`).
 - **High-fidelity PDFs**: Uses Playwright to produce clean, modern, and reliable PDF documents from HTML/CSS.
 
@@ -52,7 +52,7 @@ The analysis module generates a detailed statistical report (PDF) including answ
 
 - **Automated correction**: Correct exams from a single PDF containing all scans or from a folder of individual images.
 - **Online platform results**: Ingest student answers exported from **Wooclap** or **Moodle** (CSV or XLSX) with `pexams correct-online`, without needing any scanned sheets. Fuzzy question and answer matching ensures robustness against minor text differences.
-- **Robust image processing**: Uses `OpenCV` with fiducial markers for reliable, automatic perspective correction and alignment, the `TrOCR` vision transformer model for OCR of the student ID, name, and model ID, and custom position detection for the answers.
+- **Robust image processing**: Uses `OpenCV` with fiducial markers for reliable, automatic perspective correction and alignment, a vision LLM (default) or the local `TrOCR` model to read the student ID, name and model ID, and custom position detection for the answers.
 - **Detailed reports**:
   - `correction_results.csv`: Detailed scores and answers for each student.
   - `question_stats.csv`: Answer distribution statistics and original question IDs.
@@ -142,7 +142,7 @@ Optional explanation text...
 - The **first answer** in the list is treated as the correct one (it will be shuffled during exam generation).
 - Images must be in a blockquote `> ![...]`.
 - Question ID can be a string or integer.
-- Per-question points can be set in the header with `{points=2.5}`.
+- Per-question points can be set in the header with `{points=2.5}`. In mixed exams, or when questions have different values, they are printed after the question number, e.g. **3.** **[2.5 pt]** (see `--show-points`).
 - Per-question font size can be set with `{font_size=8pt}`.
 
 ### Mixed exams with open-answer questions
@@ -208,6 +208,7 @@ pexams generate <input_file> --to <format> --output-dir <path> [OPTIONS]
 - `--custom-header <str>`: Markdown string or path to a Markdown file to insert before the questions (e.g., instructions).
 - `--mc-total-points <float>`: Assign a total value to all multiple-choice questions and distribute it evenly. Do not combine this with per-question non-default MC points.
 - `--fill-answer-space`: Grow the open-answer boxes of each page so they use the free space left at its bottom. Boxes with an explicit `height_mm` keep their size.
+- `--show-points {auto,always,never}`: Print each question's points after its number, e.g. `[1.5 pt]` (`[1,5 pt]` with a decimal-comma `--lang`). `auto` (default) prints them only when the exam has open-answer questions or questions of different value; a test where every question is worth the same shows none. The printed value is the question's own `points` (after `--mc-total-points`), not rescaled, so choose points that add up to the total you announce.
 
 ### Comprehensive Example
 
@@ -251,7 +252,7 @@ pexams correct \
     --input-encoding "utf-8"
 ```
 
-- The `--input-path` can be a single PDF file or a folder of images (PNG, JPG).
+- The `--input-path` can be a PDF file or a folder of images (PNG, JPG) or PDFs. If the batch was scanned into several PDFs, pass them all (`--input-path scan1.pdf scan2.pdf scan3.pdf`) or their folder: pages are read in the order given (files in a folder sorted by name) as one batch, so an exam may even be split between two PDFs.
 - The `--exam-dir` must contain the `exam_model_*_questions.json` files generated alongside the exam PDFs.
 
 **Mark Filling Arguments:**
@@ -261,8 +262,11 @@ pexams correct \
 - `--mark-column <name>`: Column name to fill with marks (will be created if missing).
 - `--fuzzy-id-match <0-100>`: Threshold for fuzzy matching of IDs (default 100 = exact match only).
 - `--name-match-threshold <0-100>`: When `--input-csv` and `--name-column` are provided, scanned exams are matched to the roster by OCR'd student name before analysis. If any scan cannot be matched, `pexams` writes `student_matches.csv` and stops before producing named artifacts or reports.
-- `--use-llm-name-ocr`: Use OpenRouter vision OCR for the student-name box before roster matching. By default, local OCR is used.
-- `--openrouter-name-model <model>`: Model used by `--use-llm-name-ocr` (default `google/gemini-3.8-flash`).
+- `--id-reader {llm,trocr}`: How to read the model, student-ID and name boxes. `llm` (default) sends the three box crops of each answer sheet to a vision LLM in one call; `trocr` uses the local TrOCR model, which is also the fallback when no API key is set or a call fails. Without `--input-csv`, each exam is identified by the ID and name read from it.
+- `--id-reader-model <model>`: Model for `--id-reader llm` (default `claude-opus-5-5` at low effort, about $0.002 per exam: it misread the fewest IDs and names in our tests, ahead of `claude-sonnet-5-5` and `claude-haiku-5-5`). Bare `claude-...` ids use the Anthropic API (`ANTHROPIC_API_KEY`); any other name (e.g. `google/gemini-3.8-flash`) uses OpenRouter (`OPENROUTER_API_KEY`).
+- `--id-reader-effort <low|medium|high>`: Reasoning effort (default `low`).
+- `--api-key-env <VAR>`: Read the API key from another environment variable.
+- `--use-llm-name-ocr`, `--openrouter-name-model`: Deprecated aliases of `--id-reader llm --id-reader-model <model>`.
 - `--input-encoding <str>`: Encoding of the input CSV file (default `utf-8`). Useful if you encounter encoding errors, in which case you can try `latin1` or `utf-8-sig`.
 - `--input-sep <str>`: Separator for the input CSV file (default `,`). If your CSV uses semicolons (common in Europe), pass `--input-sep semi` or `--input-sep ";"`.
 - `--output-decimal-sep <str>`: Decimal separator for the output marks (default `.`). Use `,` if your locale requires comma decimals (e.g., `--output-decimal-sep ","`).
@@ -278,6 +282,10 @@ pexams correct \
 - `--void-questions <str>`: Comma-separated list of question numbers to exclude from scoring.
 - `--void-questions-nicely <str>`: Comma-separated list of question IDs to void "nicely".
 - `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. 
+
+**Layout check.** Each open-answer crop is checked against the printed box borders. If the borders are not where `open_answer_areas.json` expects them (typically because `--exam-dir` is not the exact version that was printed), pexams logs a warning and marks the crop with `layout_check=box_not_found` in `open_responses_index.csv`.
+
+**Traceability.** With `--id-reader llm`, the output folder also contains `run_manifest.json` (command, package versions and git commits, model, effort, SHA-256 of the inputs) and `llm_calls.jsonl` (one line per LLM call: model requested and served, effort, request id, tokens, latency and hashes of the prompt, images and response).
 
 ### Manual Correction Workflow
 

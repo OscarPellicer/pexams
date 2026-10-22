@@ -99,6 +99,7 @@ def test_full_pipeline(output_dir, sample_questions):
         solutions_per_model=solutions_simple,
         output_dir=correction_dir,
         questions_dir=exam_dir,
+        id_reader="trocr",  # offline: never call a paid API from the test suite
     )
     assert success, "Exam correction step failed."
 

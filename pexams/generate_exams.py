@@ -202,10 +202,40 @@ def _generate_answer_sheet_html(
 """
 
 
+SHOW_POINTS_CHOICES = ("auto", "always", "never")
+
+# Languages written with a decimal point; the rest of LANG_STRINGS use a decimal comma.
+_DECIMAL_POINT_LANGS = {"en"}
+
+
+def _format_points(points: float, lang: str = "en") -> str:
+    """Format a question's points for printing, e.g. ``[1.5 pt]`` or ``[1,5 pt]``."""
+    value = f"{points:.2f}".rstrip("0").rstrip(".")
+    if lang not in _DECIMAL_POINT_LANGS:
+        value = value.replace(".", ",")
+    return f"[{value} pt]"
+
+
+def _should_show_points(questions: List[PexamQuestion], show_points: str = "auto") -> bool:
+    """Resolve ``show_points``: ``auto`` prints them only when they tell the student something,
+    that is, when there are open-answer questions or questions of different value."""
+    if show_points not in SHOW_POINTS_CHOICES:
+        raise ValueError(f"show_points must be one of {SHOW_POINTS_CHOICES}, got {show_points!r}.")
+    if show_points != "auto":
+        return show_points == "always"
+    distinct_points = {round(float(q.points), 6) for q in questions}
+    return any(q.is_open_answer for q in questions) or len(distinct_points) > 1
+
+
 def _generate_questions_markdown(
-    questions: List[PexamQuestion]
+    questions: List[PexamQuestion],
+    show_points: bool = False,
+    lang: str = "en",
 ) -> str:
-    """Generates the Markdown for the question pages."""
+    """Generates the Markdown for the question pages.
+
+    show_points: Print each question's points (e.g. ``[1.5 pt]``) right after its number.
+    """
     md_parts = []
     # Configure markdown extensions
     extensions = [
@@ -228,6 +258,8 @@ def _generate_questions_markdown(
         # keep separate blocks, so display math ($$...$$ in its own paragraph) is recognised.
         question_text_html = markdown.markdown(q.text, extensions=extensions + ['nl2br'], extension_configs=extension_configs).strip()
         number_html = f"<b>{q.id}.</b> "
+        if show_points:
+            number_html += f'<span class="question-points">{_format_points(q.points, lang)}</span> '
         if question_text_html.startswith("<p>") and question_text_html.endswith("</p>") and question_text_html.count("<p>") == 1:
             question_text_html = number_html + question_text_html[3:-4]
         elif question_text_html.startswith("<p>"):
@@ -514,6 +546,7 @@ def generate_exams(
     markdown_asset_base_dir: Optional[str] = None,
     mc_total_points: Optional[float] = None,
     fill_answer_space: bool = False,
+    show_points: str = "auto",
 ):
     """
     Generates exam PDFs from a list of questions using Playwright.
@@ -525,6 +558,11 @@ def generate_exams(
 
     fill_answer_space: Grow the open-answer boxes of each page to use the free space left
     at its bottom (boxes with an explicit ``height_mm`` keep their size).
+
+    show_points: Print each question's points (e.g. ``[1.5 pt]``) right after its number:
+    ``always``, ``never``, or ``auto`` (default), which prints them only when the exam has
+    open-answer questions or questions of different value. The printed value is the
+    question's own ``points`` (after ``mc_total_points``), not rescaled to any total.
     """
     logging.info(f"Starting pexams PDF generation.")
     
@@ -562,6 +600,8 @@ def generate_exams(
             points_per_question = mc_total_points / len(multiple_choice_questions)
             for q in multiple_choice_questions:
                 q.points = points_per_question
+
+    print_points = _should_show_points(questions_list, show_points)
 
     logging.info(f"Loaded {len(questions_list)} questions.")
     logging.info(f"Exams will be output to: {output_dir}")
@@ -680,7 +720,7 @@ def generate_exams(
             spacer_html = ""
             pages_before_questions_html = f"""{answer_sheet_html}
     <div class="page-container" style="page-break-after: always;"></div>"""
-        questions_md = _generate_questions_markdown(model_questions)
+        questions_md = _generate_questions_markdown(model_questions, show_points=print_points, lang=lang)
         questions_html = markdown.markdown(questions_md)
         if markdown_asset_base_dir:
             questions_html = _resolve_relative_media_uris(questions_html, markdown_asset_base_dir)

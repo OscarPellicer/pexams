@@ -7,7 +7,7 @@ import json
 import re
 import base64
 import shutil
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 # Attempt to import OpenCV and other libraries, with graceful failure
@@ -26,7 +26,7 @@ except ImportError as e:
 
 from pexams import layout
 from pexams.schemas import PexamExam, PexamQuestion, PexamOption
-from pexams.student_matching import match_scanned_students
+from pexams.student_matching import match_scanned_students, normalize_student_id
 from pathlib import Path
 
 
@@ -61,6 +61,59 @@ def _load_simulated_scan_manifest(input_path: str) -> Dict[str, dict]:
     except Exception as e:
         logging.warning("Failed to read simulated scan manifest %s: %s", manifest_path, e)
         return {}
+
+
+SCAN_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def _load_scan_pages(input_paths: Union[str, Sequence[str]]) -> Tuple[List["np.ndarray"], List[str], Dict[str, dict]]:
+    """Load the scanned pages of one or more inputs, in the order given.
+
+    Each input is a PDF or a directory. A directory contributes its images and PDFs sorted
+    by file name, so a batch scanned into several PDFs (e.g. timestamped by the scanner) is
+    read in scan order. Pages are simply concatenated: an exam may even be split between
+    two consecutive PDFs. Returns the page images, their source (the image path, or
+    ``"file.pdf#page=N"``) and the merged simulated-scan manifest.
+    """
+    if isinstance(input_paths, (str, os.PathLike)):
+        input_paths = [input_paths]
+
+    images: List[np.ndarray] = []
+    sources: List[str] = []
+    manifest: Dict[str, dict] = {}
+
+    def add_pdf(pdf_path):
+        logging.info("Converting PDF pages to images: %s", pdf_path)
+        for page_number, pil_img in enumerate(convert_from_path(pdf_path), start=1):
+            images.append(cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR))
+            sources.append(f"{pdf_path}#page={page_number}")
+
+    for input_path in input_paths:
+        input_path = str(input_path)
+        if os.path.isdir(input_path):
+            manifest.update(_load_simulated_scan_manifest(input_path))
+            # glob returns files in arbitrary order; sort them so the pages of each exam are
+            # processed in sequence (response pages are located relative to the first page).
+            files = sorted(
+                f for f in glob.glob(os.path.join(input_path, "*"))
+                if f.lower().endswith(SCAN_IMAGE_EXTENSIONS + (".pdf",))
+            )
+            logging.info("Input directory %s: %d scan file(s).", input_path, len(files))
+            for f in files:
+                if f.lower().endswith(".pdf"):
+                    add_pdf(f)
+                    continue
+                img = cv2.imread(f)
+                if img is None:
+                    logging.warning(f"Could not read image file: {f}")
+                    continue
+                images.append(img)
+                sources.append(f)
+        elif os.path.isfile(input_path) and input_path.lower().endswith(".pdf"):
+            add_pdf(input_path)
+        else:
+            raise ValueError(f"Input path '{input_path}' is not a PDF file or a directory.")
+    return images, sources, manifest
 
 # Define the standard resolution for the entire correction process for consistency.
 PX_PER_MM = 10.0
@@ -397,6 +450,54 @@ def _ocr_student_name_openrouter(
         logging.error("OpenRouter name OCR failed on page %s: %s", page_number, e)
         return ""
 
+def _box_png(warped_image, box, px_per_mm, padding=5) -> Optional[bytes]:
+    tl_x, tl_y = box.top_left
+    br_x, br_y = box.bottom_right
+    roi = warped_image[int(tl_y * px_per_mm) + padding:int(br_y * px_per_mm) - padding,
+                       int(tl_x * px_per_mm) + padding:int(br_x * px_per_mm) - padding]
+    if roi.size == 0:
+        return None
+    ok, png = cv2.imencode(".png", roi)
+    return png.tobytes() if ok else None
+
+
+_HEADER_PROMPT = (
+    "These are crops of the header boxes of one scanned paper exam, in this order: "
+    "{boxes}. The contents are handwritten (the model box may be printed). Transcribe them exactly as written; "
+    "do not guess missing characters (use '?' for an unreadable character). "
+    'Return only JSON: {{"model_id": "...", "student_id": "...", "student_name": "..."}} '
+    "(empty string for an empty box)."
+)
+
+
+def _read_header_llm(warped_image, model_layout, student_layout, px_per_mm, llm, page_number=None) -> Optional[dict]:
+    """Read the model, student-ID and name boxes with a vision LLM in one call."""
+    from pexams.llm import parse_json_response
+
+    crops = [
+        ("model box", _box_png(warped_image, model_layout.model_id_box, px_per_mm)),
+        ("student ID box", _box_png(warped_image, student_layout.student_id_box, px_per_mm)),
+        ("student name box", _box_png(warped_image, student_layout.student_name_box, px_per_mm)),
+    ]
+    crops = [(label, data) for label, data in crops if data]
+    if not crops:
+        return None
+    try:
+        text, _ = llm.complete(
+            _HEADER_PROMPT.format(boxes=", ".join(label for label, _ in crops)),
+            images=[(data, "image/png") for _, data in crops],
+            max_tokens=4000,
+            json_output=True,
+            purpose="read_exam_header",
+            context={"page": page_number},
+        )
+        result = parse_json_response(text)
+        return {key: str(result.get(key, "") or "").strip() for key in ("model_id", "student_id", "student_name")}
+    except Exception as e:
+        logging.error("LLM header reading failed on page %s: %s", page_number, e)
+        return None
+
+
 def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float, questions: List[PexamQuestion]):
     """Analyzes the warped sheet to find marked answers and scores them."""
     gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
@@ -442,6 +543,22 @@ def _analyze_and_score(warped_image, solutions: Dict[int, int], px_per_mm: float
             
     total_points = sum(float(q.points) for q in questions if q.id in solutions)
     return {"score": score, "total_questions": len(solutions), "total_points": total_points, "answers": detected_answers}
+
+
+def _border_found(warped_page, x, y, w, h, px_per_mm, tolerance_mm=3.0, min_dark_fraction=0.5) -> bool:
+    """True if the answer box's top and bottom borders are where the layout says they are.
+    A printed box border is a long dark line across most of the width; handwriting is not."""
+    gray = cv2.cvtColor(warped_page, cv2.COLOR_BGR2GRAY) if warped_page.ndim == 3 else warped_page
+    x0, x1 = x + int(0.1 * w), x + int(0.9 * w)
+    if x1 <= x0:
+        return True
+    tol = max(1, int(tolerance_mm * px_per_mm))
+    threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+    for edge in (y, y + h):
+        rows = threshold[max(0, edge - tol):min(gray.shape[0], edge + tol + 1), x0:x1]
+        if rows.size == 0 or (rows > 0).mean(axis=1).max() < min_dark_fraction:
+            return False
+    return True
 
 
 def _extract_open_answer_responses(images_to_process: List[np.ndarray], page_results: List[dict], questions_dir: str, output_dir: str, debug_dir: str):
@@ -515,6 +632,7 @@ def _extract_open_answer_responses(images_to_process: List[np.ndarray], page_res
             w = max(1, int(float(area["width_mm"]) * PX_PER_MM))
             h = max(1, int(float(area["height_mm"]) * PX_PER_MM))
             crop = warped_page[y:y + h, x:x + w]
+            layout_ok = _border_found(warped_page, x, y, w, h, PX_PER_MM)
             if crop.size == 0:
                 logging.warning("Empty open-answer crop for student %s, question %s.", student_id, area.get("question_id"))
                 continue
@@ -541,12 +659,20 @@ def _extract_open_answer_responses(images_to_process: List[np.ndarray], page_res
                 # Relative to the index CSV (saved in output_dir), so the folder stays portable
                 # and does not depend on the working directory used when correcting.
                 "crop_path": os.path.relpath(crop_path, output_dir),
+                "layout_check": "ok" if layout_ok else "box_not_found",
             })
 
     if not index_rows:
         logging.warning("No open-answer response crops were extracted.")
         return
 
+    mismatched = [r for r in index_rows if r["layout_check"] != "ok"]
+    if mismatched:
+        logging.warning(
+            "%d of %d answer crops do not line up with the printed box borders (layout_check=box_not_found in "
+            "open_responses_index.csv). Is --exam-dir the exact version that was printed? Check a few crops.",
+            len(mismatched), len(index_rows),
+        )
     index_path = os.path.join(output_dir, "open_responses_index.csv")
     with open(index_path, "w", newline="", encoding="utf-8") as f:
         fieldnames = list(index_rows[0].keys())
@@ -556,7 +682,7 @@ def _extract_open_answer_responses(images_to_process: List[np.ndarray], page_res
     logging.info("Saved %d open-answer response crop(s) to %s", len(index_rows), responses_dir)
 
 def correct_exams(
-    input_path: str,
+    input_path: Union[str, Sequence[str]],
     solutions_per_model: Dict[str, Dict[int, int]],
     output_dir: str,
     questions_dir: str,
@@ -568,12 +694,23 @@ def correct_exams(
     name_match_threshold: float = 70.0,
     use_llm_name_ocr: bool = False,
     openrouter_name_model: str = "google/gemini-3.8-flash",
+    id_reader: str = "llm",
+    id_reader_model: str = "claude-opus-5-5",
+    id_reader_effort: Optional[str] = "low",
+    api_key_env: Optional[str] = None,
 ) -> bool:
+    """Correct scanned exams. ``input_path`` is a PDF or a directory, or a list of them read in
+    order as a single batch (see :func:`_load_scan_pages`). ``id_reader="llm"`` (default) reads the model, student-ID and
+    name boxes with a vision LLM (``id_reader_model``); ``"trocr"`` uses the local TrOCR model,
+    which is also the fallback when no API key is available or a call fails. Every LLM call is
+    logged to ``<output_dir>/llm_calls.jsonl``."""
     if not OPENCV_AVAILABLE:
         logging.critical("Required libraries (OpenCV, etc.) are not installed.")
         return False
 
-    logging.info(f"Starting pexams correction for: {input_path}")
+    # Several inputs (PDFs and/or directories) are read in the order given, as one batch.
+    input_paths = [str(input_path)] if isinstance(input_path, (str, os.PathLike)) else [str(p) for p in input_path]
+    logging.info(f"Starting pexams correction for: {', '.join(input_paths)}")
     os.makedirs(output_dir, exist_ok=True)
     scanned_pages_dir = os.path.join(output_dir, "scanned_pages")
     staged_pages_dir = os.path.join(output_dir, "_scanned_pages_unmatched")
@@ -581,57 +718,52 @@ def correct_exams(
     debug_dir = os.path.join(output_dir, "debug")
     os.makedirs(debug_dir, exist_ok=True)
 
-    images_to_process: List[np.ndarray] = []
-    image_sources: List[str] = []
-    simulated_scan_manifest: Dict[str, dict] = {}
-
-    if os.path.isdir(input_path):
-        logging.info("Input path is a directory, scanning for PNG/JPG images.")
-        simulated_scan_manifest = _load_simulated_scan_manifest(input_path)
-        # glob returns files in arbitrary order; sort them so the pages of each exam are
-        # processed in sequence (response pages are located relative to the first page).
-        image_files = sorted(glob.glob(os.path.join(input_path, "*.png")) +
-                             glob.glob(os.path.join(input_path, "*.jpg")) +
-                             glob.glob(os.path.join(input_path, "*.jpeg")))
-        
-        for image_file in image_files:
-            img = cv2.imread(image_file)
-            if img is not None:
-                images_to_process.append(img)
-                image_sources.append(image_file)
-            else:
-                logging.warning(f"Could not read image file: {image_file}")
-
-    elif os.path.isfile(input_path) and input_path.lower().endswith('.pdf'):
-        logging.info("Input path is a PDF file, converting pages to images.")
-        try:
-            pil_images = convert_from_path(input_path)
-            for pil_img in pil_images:
-                frame = np.array(pil_img)
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                images_to_process.append(frame)
-                image_sources.append("")
-        except Exception as e:
-            logging.error(f"Failed to convert PDF to images: {e}")
-            return False
-    else:
-        logging.error(f"Input path '{input_path}' is not a valid PDF file or a directory.")
+    try:
+        images_to_process, image_sources, simulated_scan_manifest = _load_scan_pages(input_paths)
+    except Exception as e:
+        logging.error(f"Failed to load the scans: {e}")
         return False
+    logging.info("Loaded %d scanned page(s) from %d input(s).", len(images_to_process), len(input_paths))
 
     if not images_to_process:
         logging.warning("No images found to process.")
         return False
 
-    # Initialize TrOCR model and processor
+    # Header reader: a vision LLM by default, TrOCR as the fallback.
+    if use_llm_name_ocr and id_reader == "trocr":
+        id_reader, id_reader_model = "llm", openrouter_name_model
+    llm = None
+    if id_reader == "llm":
+        from pexams.llm import LLMClient, write_run_manifest
+
+        try:
+            llm = LLMClient(
+                id_reader_model, effort=id_reader_effort, api_key_env=api_key_env,
+                log_path=os.path.join(output_dir, "llm_calls.jsonl"), tool="pexams",
+            )
+            write_run_manifest(output_dir, "pexams correct", llm, inputs=[*input_paths, roster_csv or ""],
+                               extra={"id_reader": "llm"})
+            logging.info("Reading exam headers with %s (%s).", id_reader_model, llm.provider)
+        except Exception as e:
+            logging.warning("LLM header reading unavailable (%s). Falling back to TrOCR.", e)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logging.info(f"Using device: {device} for OCR.")
-    try:
-        processor = load_trocr_processor("microsoft/trocr-base-printed")
-        model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed").to(device)
-    except Exception as e:
-        logging.error(f"Failed to initialize TrOCR model: {e}")
-        logging.error("Please make sure you have an internet connection and the required transformers/torch/timm packages installed.")
-        return False
+    processor = model = None
+
+    def ensure_trocr():
+        nonlocal processor, model
+        if processor is None:
+            logging.info(f"Loading TrOCR on {device}.")
+            processor = load_trocr_processor("microsoft/trocr-base-printed")
+            model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed").to(device)
+
+    if llm is None:
+        try:
+            ensure_trocr()
+        except Exception as e:
+            logging.error(f"Failed to initialize TrOCR model: {e}")
+            logging.error("Please make sure you have an internet connection and the required transformers/torch/timm packages installed.")
+            return False
 
     all_results = []
 
@@ -669,7 +801,15 @@ def correct_exams(
         
         # We need a layout object to find the model ID box. The number of questions doesn't affect its position.
         layout_for_model_ocr = layout.get_answer_sheet_layout(questions=[dummy_question])
-        model_id = _ocr_model_id(warped_sheet, layout_for_model_ocr, PX_PER_MM, processor, model, device, debug_dir, page_number)
+        header = None
+        if llm is not None:
+            # The ID/name boxes do not depend on the questions either, so one call reads all three.
+            header = _read_header_llm(warped_sheet, layout_for_model_ocr, layout_for_model_ocr, PX_PER_MM, llm, page_number)
+        if header is not None:
+            model_id = re.sub(r"[^0-9A-Z]", "", header["model_id"].upper())[:1]
+        else:
+            ensure_trocr()
+            model_id = _ocr_model_id(warped_sheet, layout_for_model_ocr, PX_PER_MM, processor, model, device, debug_dir, page_number)
 
         if not model_id or model_id not in solutions_per_model:
             logging.warning(f"Could not detect a valid model ID for page {page_number} (detected: '{model_id}'). Skipping page.")
@@ -692,20 +832,14 @@ def correct_exams(
             continue
         
         layout_data_for_page = layout.get_answer_sheet_layout(questions)
-        ocr_student_id = _ocr_student_id(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
-        student_name = _ocr_student_name(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
-        if use_llm_name_ocr:
-            llm_student_name = _ocr_student_name_openrouter(
-                warped_sheet,
-                layout_data_for_page,
-                PX_PER_MM,
-                openrouter_name_model,
-                debug_dir,
-                page_number,
-            )
-            if llm_student_name:
-                logging.info("Page %s: OpenRouter name OCR returned '%s'.", page_number, llm_student_name)
-                student_name = llm_student_name
+        if header is not None:
+            ocr_student_id = re.sub(r"[^0-9A-Z?]", "", header["student_id"].upper())
+            student_name = header["student_name"]
+            logging.info("Page %s: LLM read ID '%s', name '%s'.", page_number, ocr_student_id, student_name)
+        else:
+            ensure_trocr()
+            ocr_student_id = _ocr_student_id(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
+            student_name = _ocr_student_name(warped_sheet, layout_data_for_page, PX_PER_MM, processor, model, device, debug_dir, page_number)
 
         scanned_id = f"scan_{uuid.uuid4().hex[:10]}"
         if "?" in ocr_student_id or not ocr_student_id:
@@ -864,6 +998,13 @@ def correct_exams(
                 safe_student_id = re.sub(r"[^A-Za-z0-9_-]+", "_", match.roster_student_id).strip("_") or match.scanned_id
                 shutil.copyfile(source_scan, os.path.join(scanned_pages_dir, f"{safe_student_id}.png"))
     else:
+        # Without a roster, identify each exam by the ID read from it (when readable and unique)
+        # and keep the name read from it.
+        read_ids = [normalize_student_id(r.get("ocr_student_id", "")) for r in all_results]
+        for result, read_id in zip(all_results, read_ids):
+            result["student_name"] = result.get("ocr_student_name", "")
+            if len(read_id) >= 3 and "?" not in str(result.get("ocr_student_id", "")) and read_ids.count(read_id) == 1:
+                result["student_id"] = read_id
         if os.path.isdir(scanned_pages_dir):
             shutil.rmtree(scanned_pages_dir)
         os.makedirs(scanned_pages_dir, exist_ok=True)
@@ -878,7 +1019,7 @@ def correct_exams(
             logging.warning("No pages were processed successfully.")
             return True
 
-        headers = ["page", "student_id", "student_name", "model_id", "score", "total_questions", "total_points"] + [f"answer_{q}" for q in all_q_nums]
+        headers = ["page", "student_id", "student_name", "ocr_student_id", "ocr_student_name", "model_id", "score", "total_questions", "total_points"] + [f"answer_{q}" for q in all_q_nums]
 
         with open(results_csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
@@ -888,6 +1029,8 @@ def correct_exams(
                     "page": result.get("page", "N/A"),
                     "student_id": result.get("student_id", "N/A"),
                     "student_name": result.get("student_name", "N/A"),
+                    "ocr_student_id": result.get("ocr_student_id", ""),
+                    "ocr_student_name": result.get("ocr_student_name", ""),
                     "model_id": result.get("model_id", "N/A"),
                     "score": result.get("score", "N/A"),
                     "total_questions": result.get("total_questions", "N/A"),

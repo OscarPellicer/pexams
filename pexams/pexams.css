@@ -246,6 +246,11 @@ h2 { font-size: 12pt; }
     margin-bottom: 0.5em;
 }
 
+.question-points {
+    font-weight: bold;
+    white-space: nowrap;
+}
+
 .open-answer-question {
     column-span: all;
 }
