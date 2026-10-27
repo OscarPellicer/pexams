@@ -13,8 +13,9 @@ What is the value of the following integral? $\int_0^\infty e^{-x^2} dx$
  * $\pi$
 
 ## 3
-> ![Image](test_image.jpg)
 What animal is shown in the image?
+
+![w:60mm|Image](test_image.jpg)
  * A bird
  * A dog
  * A cat

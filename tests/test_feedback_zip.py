@@ -124,3 +124,41 @@ def _sample_feedback_inputs(tmp_path):
         ]
     ).to_csv(correction_dir / "final_marks.csv", index=False)
     return correction_dir
+
+
+def _add_edge_cases(tmp_path, correction_dir):
+    """A roster row without participant and a matched student without a scanned page."""
+    moodle = pd.read_csv(tmp_path / "moodle.csv")
+    extra = [
+        {"Identificador": "", "Nom complet": "No Participant", "Número ID": "NP1"},
+        {"Identificador": "Participant3", "Nom complet": "No Image", "Número ID": "NI1"},
+    ]
+    pd.concat([moodle, pd.DataFrame(extra)]).to_csv(tmp_path / "moodle.csv", index=False)
+    marks = pd.read_csv(correction_dir / "final_marks.csv")
+    pd.concat([marks, pd.DataFrame([{"student_id": "NI1", "mark": 3.333}])]).to_csv(
+        correction_dir / "final_marks.csv", index=False)
+
+
+def test_feedback_zip_and_csv_report_missing_images_and_participants(tmp_path):
+    correction_dir = _sample_feedback_inputs(tmp_path)
+    _add_edge_cases(tmp_path, correction_dir)
+
+    zip_result = create_moodle_feedback_zip(
+        moodle_csv=str(tmp_path / "moodle.csv"), correction_dir=str(correction_dir),
+        output_zip=str(tmp_path / "feedback.zip"), feedback_file_format="png")
+    zip_manifest = pd.read_csv(zip_result.manifest_csv, dtype=str).fillna("")
+    assert (zip_result.added, zip_result.unmatched_roster, zip_result.unmatched_marks) == (1, 2, 2)
+    assert list(zip_manifest["status"]) == [
+        "added", "unmatched mark", "missing image", "missing id or participant", "no mark"]
+    assert zip_manifest.loc[2, "mark"] == "3.33"
+    with zipfile.ZipFile(tmp_path / "feedback.zip") as zf:
+        assert zf.namelist() == ["Heras Pardo, Carlos_12744361_assignfeedback_file_pexams_feedback_AB27864.png"]
+
+    csv_result = create_moodle_feedback_csv(
+        moodle_csv=str(tmp_path / "moodle.csv"), correction_dir=str(correction_dir),
+        output_csv=str(tmp_path / "feedback.csv"))
+    csv_manifest = pd.read_csv(csv_result.manifest_csv, dtype=str).fillna("")
+    assert (csv_result.added, csv_result.unmatched_roster, csv_result.unmatched_marks) == (1, 3, 2)
+    assert list(csv_manifest["status"]) == [
+        "added", "no mark", "missing id or participant", "missing image", "unmatched mark",
+        "missing id or participant"]

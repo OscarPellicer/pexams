@@ -14,7 +14,7 @@ import csv
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import Levenshtein
 import pandas as pd
@@ -137,6 +137,18 @@ def load_results_file(
 # Answer-to-option matching
 # ---------------------------------------------------------------------------
 
+def _closest_text(clean: str, texts: List[str]) -> Tuple[int, float]:
+    """Index (``-1`` if none) and Levenshtein ratio of the text closest to *clean*; the first
+    one wins ties."""
+    best_idx, best_ratio = -1, 0.0
+    for i, text in enumerate(texts):
+        ratio = Levenshtein.ratio(text.strip(), clean)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx = i
+    return best_idx, best_ratio
+
+
 def match_answer_to_option(
     answer_text: str,
     options: List[PexamOption],
@@ -159,13 +171,7 @@ def match_answer_to_option(
             return i, True
 
     # 2. Levenshtein fuzzy match
-    best_idx, best_ratio = -1, 0.0
-    for i, opt in enumerate(options):
-        ratio = Levenshtein.ratio(opt.text.strip(), clean)
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_idx = i
-
+    best_idx, best_ratio = _closest_text(clean, [opt.text for opt in options])
     if best_ratio >= 0.5:
         return best_idx, False
 
@@ -207,12 +213,8 @@ def _match_question_by_text(
             return q
 
     # 2. Fuzzy match
-    best_q, best_ratio = None, 0.0
-    for q in questions:
-        ratio = Levenshtein.ratio(q.text.strip(), clean)
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_q = q
+    best_idx, best_ratio = _closest_text(clean, [q.text for q in questions])
+    best_q = questions[best_idx] if best_idx >= 0 else None
 
     if best_ratio >= fuzzy_threshold and best_q is not None:
         msg = (
@@ -265,48 +267,13 @@ def _cell_is_blank(cell) -> bool:
     return s in ("", "/", "nan")
 
 
-# ---------------------------------------------------------------------------
-# Public parsers
-# ---------------------------------------------------------------------------
-
-def parse_wooclap_results(
-    results_path: str,
+def _match_wooclap_columns(
+    df: pd.DataFrame,
     questions: List[PexamQuestion],
-    fuzzy_threshold: float = 0.80,
-    encoding: str = "auto",
-    sep: str = "auto",
-) -> pd.DataFrame:
-    """Parse a Wooclap results file (CSV or XLSX) into the standard
-    ``correction_results.csv`` format used by
-    :func:`pexams.analysis.analyze_results`.
-
-    Expected column header format::
-
-        Q1 - <question text> (N pts)
-
-    Expected answer cell format::
-
-        V - <option text>   (correct answer chosen)
-        X - <option text>   (wrong answer chosen)
-        /  or blank         (no answer)
-
-    Args:
-        results_path: Path to the Wooclap results CSV or XLSX file.
-        questions: List of :class:`~pexams.schemas.PexamQuestion` objects.
-            Must have sequential integer IDs (1, 2, …).
-        fuzzy_threshold: Minimum Levenshtein ratio (0–1) for question-text
-            matching.  Default 0.80.
-        encoding: File encoding, or ``'auto'`` to detect automatically.
-        sep: CSV separator, or ``'auto'`` to detect automatically.
-
-    Returns:
-        DataFrame with columns:
-        ``page, student_id, student_name, model_id, score,
-        total_questions, answer_1, answer_2, …``
-    """
-    df = load_results_file(results_path, encoding=encoding, sep=sep)
-
-    # --- Match answer columns to questions ---
+    fuzzy_threshold: float,
+) -> Dict[str, PexamQuestion]:
+    """Map each ``Q<n> - <text> (N pts)`` column to its question by text; raises (after
+    printing a diagnostic) when no column matches."""
     col_to_question: Dict[str, PexamQuestion] = {}
     matched_regex_cols: List[str] = []  # columns that matched _WOOCLAP_COL_RE
     for col in df.columns:
@@ -348,101 +315,188 @@ def parse_wooclap_results(
         _safe_print("[Wooclap diagnostic] Question texts from your file (first 5): "
                     f"{sample_questions}")
         raise ValueError(msg)
+    return col_to_question
 
-    matched_questions = list(col_to_question.values())
-    _safe_print(f"[Wooclap] Matched {len(col_to_question)} answer column(s).")
 
+def _is_wooclap_summary_row(srow: pd.Series) -> bool:
+    """Summary/percentage rows that Wooclap sometimes appends."""
+    first_cell = str(srow.iloc[0]).strip() if len(srow) > 0 else ""
+    second_cell = str(srow.iloc[1]).strip() if len(srow) > 1 else ""
+    if re.match(r"^\d+\.?\d*\s*%$", first_cell):
+        return True
+    return any(
+        cell_val.lower() in ("media", "average", "moyenne", "promedio")
+        for cell_val in (first_cell, second_cell)
+    )
+
+
+def _student_identity(srow: pd.Series, page_idx: int, id_col, name_col) -> Tuple[str, str]:
+    """Student ID (the row number when missing) and name of a results row."""
+    student_id = (
+        str(srow[id_col]).strip()
+        if id_col and not pd.isna(srow[id_col])
+        else str(page_idx)
+    )
+    student_name = (
+        str(srow[name_col]).strip()
+        if name_col and name_col in srow.index and not pd.isna(srow[name_col])
+        else ""
+    )
+    return student_id, student_name
+
+
+def _answer_letter(
+    cell_text: str,
+    question: PexamQuestion,
+    student_id: str,
+    platform: str,
+    unmatched_label: str,
+) -> str:
+    """Option letter of the student's answer text, or ``'NA'`` when no option matches.
+    Fuzzy matches are printed and logged so the user can verify them."""
+    opt_idx, is_exact = match_answer_to_option(cell_text, question.options)
+
+    if not is_exact and opt_idx >= 0:
+        msg = (
+            f"[{platform}] Fuzzy-matched answer for Q{question.id} "
+            f"(student={student_id}): "
+            f"'{cell_text[:50]}' → "
+            f"option {opt_idx} '{question.options[opt_idx].text[:50]}'"
+        )
+        _safe_print(msg)
+        logger.info(msg)
+
+    if opt_idx >= 0:
+        return chr(ord("A") + opt_idx)
+    logger.warning(
+        "Could not match %s '%s' to any option for Q%s "
+        "(student=%s). Marking as NA.",
+        unmatched_label, cell_text[:80], question.id, student_id,
+    )
+    return "NA"
+
+
+def _result_row(
+    page_idx: int,
+    student_id: str,
+    student_name: str,
+    answers: Dict[int, str],
+    questions: List[PexamQuestion],
+    total_questions: int,
+) -> Dict:
+    """One ``correction_results.csv`` row: identity, score (points of the correctly answered
+    questions) and the ``answer_<id>`` letters."""
+    score = sum(
+        float(q.points)
+        for q in questions
+        if (
+            q.correct_answer_index is not None
+            and answers.get(q.id) == chr(ord("A") + q.correct_answer_index)
+        )
+    )
+    row: Dict = {
+        "page": page_idx,
+        "student_id": student_id,
+        "student_name": student_name,
+        "model_id": "1",
+        "score": score,
+        "total_questions": total_questions,
+    }
+    for q in questions:
+        row[f"answer_{q.id}"] = answers.get(q.id, "NA")
+    return row
+
+
+def _build_result_rows(
+    df: pd.DataFrame,
+    columns: List[Tuple[str, PexamQuestion]],
+    platform: str,
+    unmatched_label: str,
+    clean_cell: Callable[[str], str] = lambda text: text,
+    skip_row: Optional[Callable[[pd.Series], bool]] = None,
+) -> pd.DataFrame:
+    """Turn every student row of *df* into a ``correction_results.csv`` row, reading the answer
+    of each (column, question) pair. ``clean_cell`` preprocesses the stripped cell text;
+    ``skip_row`` drops rows, which still count for the ``page`` number."""
+    questions = [q for _, q in columns]
     id_col, name_col = _detect_student_cols(df)
 
-    # --- Build correction_results rows ---
     rows = []
     for page_idx, (_, srow) in enumerate(df.iterrows(), start=1):
-        # Skip summary/percentage rows that Wooclap sometimes appends
-        first_cell = str(srow.iloc[0]).strip() if len(srow) > 0 else ""
-        second_cell = str(srow.iloc[1]).strip() if len(srow) > 1 else ""
-        
-        is_summary = False
-        if re.match(r"^\d+\.?\d*\s*%$", first_cell):
-            is_summary = True
-        
-        for cell_val in (first_cell, second_cell):
-            if cell_val.lower() in ("media", "average", "moyenne", "promedio"):
-                is_summary = True
-                
-        if is_summary:
+        if skip_row is not None and skip_row(srow):
             continue
-
-        student_id = (
-            str(srow[id_col]).strip()
-            if id_col and not pd.isna(srow[id_col])
-            else str(page_idx)
-        )
-        student_name = (
-            str(srow[name_col]).strip()
-            if name_col and name_col in srow.index and not pd.isna(srow[name_col])
-            else ""
-        )
+        student_id, student_name = _student_identity(srow, page_idx, id_col, name_col)
 
         answers: Dict[int, str] = {}
-        for col, question in col_to_question.items():
+        for col, question in columns:
             cell = srow[col]
-
             if _cell_is_blank(cell):
                 answers[question.id] = "NA"
                 continue
+            cell_text = clean_cell(str(cell).strip())
+            answers[question.id] = _answer_letter(cell_text, question, student_id, platform, unmatched_label)
 
-            # Strip correctness prefix ("V - " or "X - ")
-            cell_text = _WOOCLAP_PREFIX_RE.sub("", str(cell).strip())
-
-            opt_idx, is_exact = match_answer_to_option(cell_text, question.options)
-
-            if not is_exact and opt_idx >= 0:
-                msg = (
-                    f"[Wooclap] Fuzzy-matched answer for Q{question.id} "
-                    f"(student={student_id}): "
-                    f"'{cell_text[:50]}' → "
-                    f"option {opt_idx} '{question.options[opt_idx].text[:50]}'"
-                )
-                _safe_print(msg)
-                logger.info(msg)
-
-            if opt_idx >= 0:
-                answers[question.id] = chr(ord("A") + opt_idx)
-            else:
-                logger.warning(
-                    "Could not match answer '%s' to any option for Q%s "
-                    "(student=%s). Marking as NA.",
-                    cell_text[:80], question.id, student_id,
-                )
-                answers[question.id] = "NA"
-
-        score = sum(
-            float(q.points)
-            for q in matched_questions
-            if (
-                q.correct_answer_index is not None
-                and answers.get(q.id) == chr(ord("A") + q.correct_answer_index)
-            )
-        )
-
-        row: Dict = {
-            "page": page_idx,
-            "student_id": student_id,
-            "student_name": student_name,
-            "model_id": "1",
-            "score": score,
-            "total_questions": len(col_to_question),
-        }
-        for q in matched_questions:
-            row[f"answer_{q.id}"] = answers.get(q.id, "NA")
-        rows.append(row)
+        rows.append(_result_row(page_idx, student_id, student_name, answers, questions, len(columns)))
 
     if not rows:
-        raise ValueError("No student rows found in the Wooclap results file.")
+        raise ValueError(f"No student rows found in the {platform} results file.")
 
     result_df = pd.DataFrame(rows)
-    _safe_print(f"[Wooclap] Parsed {len(result_df)} student response(s).")
+    _safe_print(f"[{platform}] Parsed {len(result_df)} student response(s).")
     return result_df
+
+
+# ---------------------------------------------------------------------------
+# Public parsers
+# ---------------------------------------------------------------------------
+
+def parse_wooclap_results(
+    results_path: str,
+    questions: List[PexamQuestion],
+    fuzzy_threshold: float = 0.80,
+    encoding: str = "auto",
+    sep: str = "auto",
+) -> pd.DataFrame:
+    """Parse a Wooclap results file (CSV or XLSX) into the standard
+    ``correction_results.csv`` format used by
+    :func:`pexams.analysis.analyze_results`.
+
+    Expected column header format::
+
+        Q1 - <question text> (N pts)
+
+    Expected answer cell format::
+
+        V - <option text>   (correct answer chosen)
+        X - <option text>   (wrong answer chosen)
+        /  or blank         (no answer)
+
+    Args:
+        results_path: Path to the Wooclap results CSV or XLSX file.
+        questions: List of :class:`~pexams.schemas.PexamQuestion` objects.
+            Must have sequential integer IDs (1, 2, …).
+        fuzzy_threshold: Minimum Levenshtein ratio (0–1) for question-text
+            matching.  Default 0.80.
+        encoding: File encoding, or ``'auto'`` to detect automatically.
+        sep: CSV separator, or ``'auto'`` to detect automatically.
+
+    Returns:
+        DataFrame with columns:
+        ``page, student_id, student_name, model_id, score,
+        total_questions, answer_1, answer_2, …``
+    """
+    df = load_results_file(results_path, encoding=encoding, sep=sep)
+    col_to_question = _match_wooclap_columns(df, questions, fuzzy_threshold)
+    _safe_print(f"[Wooclap] Matched {len(col_to_question)} answer column(s).")
+
+    return _build_result_rows(
+        df,
+        list(col_to_question.items()),
+        platform="Wooclap",
+        unmatched_label="answer",
+        clean_cell=lambda text: _WOOCLAP_PREFIX_RE.sub("", text),  # strip "V - " / "X - "
+        skip_row=_is_wooclap_summary_row,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -629,77 +683,9 @@ def parse_moodle_results(
         f"to {len(ordered_questions)} question(s)."
     )
 
-    id_col, name_col = _detect_student_cols(df)
-
-    # --- Build correction_results rows ---
-    rows = []
-    for page_idx, (_, srow) in enumerate(df.iterrows(), start=1):
-        student_id = (
-            str(srow[id_col]).strip()
-            if id_col and not pd.isna(srow[id_col])
-            else str(page_idx)
-        )
-        student_name = (
-            str(srow[name_col]).strip()
-            if name_col and name_col in srow.index and not pd.isna(srow[name_col])
-            else ""
-        )
-
-        answers: Dict[int, str] = {}
-        for (_, col), question in zip(answer_cols, ordered_questions):
-            cell = srow[col]
-
-            if _cell_is_blank(cell):
-                answers[question.id] = "NA"
-                continue
-
-            cell_text = str(cell).strip()
-            opt_idx, is_exact = match_answer_to_option(cell_text, question.options)
-
-            if not is_exact and opt_idx >= 0:
-                msg = (
-                    f"[Moodle] Fuzzy-matched answer for Q{question.id} "
-                    f"(student={student_id}): "
-                    f"'{cell_text[:50]}' → "
-                    f"option {opt_idx} '{question.options[opt_idx].text[:50]}'"
-                )
-                _safe_print(msg)
-                logger.info(msg)
-
-            if opt_idx >= 0:
-                answers[question.id] = chr(ord("A") + opt_idx)
-            else:
-                logger.warning(
-                    "Could not match Moodle answer '%s' to any option for Q%s "
-                    "(student=%s). Marking as NA.",
-                    cell_text[:80], question.id, student_id,
-                )
-                answers[question.id] = "NA"
-
-        score = sum(
-            float(q.points)
-            for q in ordered_questions
-            if (
-                q.correct_answer_index is not None
-                and answers.get(q.id) == chr(ord("A") + q.correct_answer_index)
-            )
-        )
-
-        row: Dict = {
-            "page": page_idx,
-            "student_id": student_id,
-            "student_name": student_name,
-            "model_id": "1",
-            "score": score,
-            "total_questions": len(answer_cols),
-        }
-        for q in ordered_questions:
-            row[f"answer_{q.id}"] = answers.get(q.id, "NA")
-        rows.append(row)
-
-    if not rows:
-        raise ValueError("No student rows found in the Moodle results file.")
-
-    result_df = pd.DataFrame(rows)
-    _safe_print(f"[Moodle] Parsed {len(result_df)} student response(s).")
-    return result_df
+    return _build_result_rows(
+        df,
+        [(col, q) for (_, col), q in zip(answer_cols, ordered_questions)],
+        platform="Moodle",
+        unmatched_label="Moodle answer",
+    )

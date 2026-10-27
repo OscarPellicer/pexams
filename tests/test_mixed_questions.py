@@ -1,4 +1,6 @@
 import json
+
+import cv2
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +10,7 @@ import pytest
 from pexams import layout
 from pexams import analysis
 from pexams import utils
-from pexams.correct_exams import _extract_open_answer_responses
+from pexams.open_responses import extract_open_answer_responses
 from pexams.generate_exams import _format_points, _generate_questions_markdown, _should_show_points, generate_exams
 from pexams.io.md_converter import load_questions_from_md, save_questions_to_md
 from pexams.schemas import PexamOption, PexamQuestion
@@ -334,7 +336,7 @@ def test_generate_mixed_exam_writes_open_answer_area_metadata(tmp_path, monkeypa
     ]
 
     utils.set_seeds(seed_questions=None, seed_answers=42)
-    monkeypatch.setattr("pexams.generate_exams.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("pexams.pdf_render.sync_playwright", lambda: FakePlaywright())
 
     generate_exams(questions, str(tmp_path), num_models=1, keep_html=True)
 
@@ -395,7 +397,7 @@ def test_generate_exam_can_distribute_total_multiple_choice_points(tmp_path, mon
     ]
 
     utils.set_seeds(seed_questions=None, seed_answers=42)
-    monkeypatch.setattr("pexams.generate_exams.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("pexams.pdf_render.sync_playwright", lambda: FakePlaywright())
 
     generate_exams(questions, str(tmp_path), num_models=1, mc_total_points=5)
 
@@ -498,15 +500,16 @@ def test_extract_open_answer_responses_writes_crops_and_index(tmp_path, monkeypa
     }]
 
     monkeypatch.setattr(
-        "pexams.correct_exams._find_fiducial_markers",
+        "pexams.open_responses.find_fiducial_markers",
         lambda *args, **kwargs: np.zeros((4, 2), dtype=np.float32),
     )
-    monkeypatch.setattr(
-        "pexams.correct_exams._apply_perspective_transform",
-        lambda *args, **kwargs: warped,
-    )
+    def fake_transform(image, corners, px_per_mm, margin_mm=0.0):
+        pad = int(round(margin_mm * px_per_mm))  # the margin around the printable area is white
+        return np.pad(warped, ((pad, pad), (pad, pad), (0, 0)), constant_values=255)
 
-    _extract_open_answer_responses(images, page_results, str(questions_dir), str(output_dir), str(debug_dir))
+    monkeypatch.setattr("pexams.open_responses.apply_perspective_transform", fake_transform)
+
+    extract_open_answer_responses(images, page_results, str(questions_dir), str(output_dir), str(debug_dir))
 
     index_path = output_dir / "open_responses_index.csv"
     crop_path = output_dir / "open_responses" / "student-1_model_1_q_2.png"
@@ -514,3 +517,7 @@ def test_extract_open_answer_responses_writes_crops_and_index(tmp_path, monkeypa
     assert index_path.exists()
     assert crop_path.exists()
     assert "open_q" in index_path.read_text(encoding="utf-8")
+    # The crop comes from the printable area, not from the white margin around it.
+    assert cv2.imread(str(crop_path)).mean() < 255
+    # Without the blank exam PDF, writing outside the box cannot be measured.
+    assert "unknown" in index_path.read_text(encoding="utf-8")

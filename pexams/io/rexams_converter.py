@@ -2,6 +2,7 @@ import logging
 import os
 from typing import List, Optional
 
+from pexams.markdown_render import MARKDOWN_IMAGE_RE, local_image_path, question_image_limits
 from pexams.schemas import PexamQuestion
 
 
@@ -9,7 +10,8 @@ def escape_latex(text: str) -> str:
     return text
 
 
-def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_image_width: Optional[int] = None, max_image_height: Optional[int] = None):
+def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_image_width: Optional[int] = None,
+                       max_image_height: Optional[int] = None, base_dir: Optional[str] = None):
     """Prepares question files (.Rmd) for R/exams using new schema."""
     os.makedirs(output_dir, exist_ok=True)
     logging.info(f"Preparing {len(questions)} R/exams files in directory: {output_dir}")
@@ -46,21 +48,17 @@ def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_imag
             # --- Build the file content in memory ---
             rmd_content = []
             
-            escaped_q_text = escape_latex(q.text)
+            # Images become include_graphics chunks below the text, with absolute paths for R.
+            images = MARKDOWN_IMAGE_RE.findall(q.text)
+            escaped_q_text = escape_latex(MARKDOWN_IMAGE_RE.sub("", q.text).strip())
             rmd_content.append("Question")
             rmd_content.append("========")
             rmd_content.append(f"{escaped_q_text}\n")
 
-            if q.image_source:
-                # Use absolute path for R/exams, ensuring forward slashes for R compatibility
-                image_path = q.image_source.replace("\\", "/")
-                
-                r_opts = ""
-                if max_image_width:
-                    r_opts += f", out.width = '{max_image_width}px'"
-                if max_image_height:
-                    r_opts += f", out.height = '{max_image_height}px'"
-                
+            width, height = question_image_limits(q, max_image_width, max_image_height)
+            r_opts = (f", out.width = '{width}'" if width else "") + (f", out.height = '{height}'" if height else "")
+            for _, src in images:
+                image_path = (local_image_path(src, base_dir) or src).replace("\\", "/")
                 rmd_content.append(f"```{'{r}'}{r_opts} include_graphics('{image_path}')\n```\n")
 
             # Get options list (first one is correct in our schema if shuffled, but here we construct the list)
@@ -93,9 +91,9 @@ def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_imag
             rmd_content.append("Meta-information")
             rmd_content.append("================")
             rmd_content.append(f"exname: Question {q.id}")
-            rmd_content.append(f"extype: mchoice")
+            rmd_content.append("extype: mchoice")
             rmd_content.append(f"exsolution: {solution_bitstring}")
-            rmd_content.append(f"exshuffle: TRUE")
+            rmd_content.append("exshuffle: TRUE")
             
             # Difficulty and other metadata not currently in PexamQuestion schema
             
@@ -110,4 +108,4 @@ def prepare_for_rexams(questions: List[PexamQuestion], output_dir: str, max_imag
         except Exception as e:
             logging.error(f"Failed to create R/exams file {q_filepath}: {e}", exc_info=True)
 
-    logging.info(f"Finished preparing R/exams files.")
+    logging.info("Finished preparing R/exams files.")

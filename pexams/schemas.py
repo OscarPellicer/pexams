@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field, computed_field, model_validator
 
@@ -27,15 +29,30 @@ class PexamQuestion(BaseModel):
     text: str
     points: float = Field(1.0, gt=0, description="Maximum points assigned to this question.")
     options: List[PexamOption] = Field(default_factory=list)
-    image_source: Optional[str] = Field(None, description="Source for an image, can be a local path, a URL, or a base64 encoded string.")
-    max_image_width: Optional[str] = Field(None, description="Maximum width for the image (e.g., '100px', '50%').")
-    max_image_height: Optional[str] = Field(None, description="Maximum height for the image (e.g., '100px', '50%').")
+    image_source: Optional[str] = Field(None, description="Legacy: an image shown below the text. It is moved into the text as an ordinary Markdown image when the question is created; put images in the text instead.")
+    max_image_width: Optional[str] = Field(None, description="Maximum width of every image in the question (e.g., '100px', '50%').")
+    max_image_height: Optional[str] = Field(None, description="Maximum height of every image in the question (e.g., '100px', '50%').")
     font_size: Optional[str] = Field(None, description="Optional per-question font size, e.g. '9pt' or '13px'.")
     explanation: Optional[str] = Field(None, description="Explanation for the correct answer.")
     expected_answer: Optional[str] = Field(None, description="Reference answer for open-answer questions.")
     rubric: Optional[str] = Field(None, description="Correction rubric for open-answer questions.")
     answer_area: PexamAnswerArea = Field(default_factory=PexamAnswerArea)
     
+    @model_validator(mode="after")
+    def move_image_into_text(self):
+        """Images are part of the text: a legacy ``image_source`` becomes a Markdown image below it.
+
+        A relative path that exists from the working directory is made absolute; otherwise it is
+        kept as written and resolved against the questions file's folder when rendering.
+        """
+        if self.image_source:
+            src = self.image_source.replace("\\", "/")
+            if "://" not in src and not src.startswith("data:") and (os.path.isabs(src) or os.path.isfile(src)):
+                src = Path(os.path.abspath(src)).as_uri()  # a file URI: no spaces to break the Markdown
+            self.text = f"{self.text.rstrip()}\n\n![]({src})" if self.text.strip() else f"![]({src})"
+            self.image_source = None
+        return self
+
     @model_validator(mode="after")
     def validate_question_shape(self):
         """Validate the fields required by each question family."""

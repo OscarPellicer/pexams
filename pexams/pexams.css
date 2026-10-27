@@ -236,6 +236,8 @@ h2 { font-size: 12pt; }
 .question-wrapper {
     break-inside: avoid-column;
     padding-bottom: 1em;
+    /* Contain floated images, so the measured height used for pagination includes them. */
+    display: flow-root;
 }
 
 .question-text p {
@@ -264,6 +266,8 @@ h2 { font-size: 12pt; }
     margin-bottom: 4mm;
     box-sizing: border-box;
     background: #fff;
+    /* Start below any floated image instead of running under it. */
+    clear: both;
 }
 
 .open-answer-line {
@@ -317,23 +321,40 @@ img {
     max-width: 100%;
     height: auto;
 }
-img[alt~="center"] {
+/* An image without its own size never fills the page: the question and its answers fit on one. */
+.question-wrapper img:not([style*="width"]):not([style*="height"]) {
+    max-height: 90mm;
+    width: auto;
+}
+/* Image alignment from the alt layout spec, e.g. ![w:60mm right](img.png). */
+img.pexams-img-center {
     display: block;
-    margin: 0 auto;
+    margin: 0.3em auto;
 }
-img[alt~="left"] {
+img.pexams-img-left {
     float: left;
-    margin-right: 1em;
-    margin-bottom: 0.5em;
+    margin: 0.2em 1em 0.5em 0;
 }
-img[alt~="right"] {
+img.pexams-img-right {
     float: right;
-    margin-left: 1em;
-    margin-bottom: 0.5em;
+    margin: 0.2em 0 0.5em 1em;
+}
+
+/* Fenced code blocks: wrap long lines instead of overflowing the column. */
+.question-wrapper pre,
+.custom-header pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 0.3em 0 0.5em 0;
+    padding: 0.3em 0.6em;
+    background: #f4f4f4;
+    border-radius: 2px;
+    font-size: 0.9em;
 }
 
 /* --- CUSTOM HEADER --- */
 .custom-header {
+    display: flow-root;
     margin-bottom: 1em;
     break-inside: avoid-column;
     column-span: all;

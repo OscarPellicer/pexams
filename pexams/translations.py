@@ -2,6 +2,7 @@
 
 LANG_STRINGS = {
     "en": {
+        "voided": "VOID",  # drawn with OpenCV: ASCII only
         "name": "Student name", "id": "Student ID", "title": "Answer sheet - Model", "course": "Course", "date": "Date", "signature": "Signature",
         "instructions_title": "Instructions",
         "instructions_answers": "<b>Answers:</b> Completely fill the box of your chosen answer.",
@@ -10,6 +11,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorrect:"
     },
     "es": {
+        "voided": "ANULADA",  # drawn with OpenCV: ASCII only
         "name": "Nombre alumno", "id": "Nº identificación", "title": "Hoja de respuestas - Modelo", "course": "Curso", "date": "Fecha", "signature": "Firma",
         "instructions_title": "Instrucciones",
         "instructions_answers": "<b>Respuestas:</b> Rellene completamente la casilla.",
@@ -18,6 +20,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorrecto:"
     },
     "ca": {
+        "voided": "ANUL-LADA",  # drawn with OpenCV: ASCII only
         "name": "Nom alumne", "id": "Nº identificació", "title": "Full de respostes - Model", "course": "Curs", "date": "Data", "signature": "Signatura",
         "instructions_title": "Instruccions",
         "instructions_answers": "<b>Respostes:</b> Ompliu completament la casella.",
@@ -26,6 +29,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorrecte:"
     },
     "de": {
+        "voided": "ANNULLIERT",  # drawn with OpenCV: ASCII only
         "name": "Name des Schülers", "id": "ID-Nummer", "title": "Antwortblatt - Modell", "course": "Kurs", "date": "Datum", "signature": "Unterschrift",
         "instructions_title": "Anweisungen",
         "instructions_answers": "<b>Antworten:</b> Füllen Sie das Feld vollständig aus.",
@@ -34,6 +38,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Falsch:"
     },
     "fr": {
+        "voided": "ANNULEE",  # drawn with OpenCV: ASCII only
         "name": "Nom de l'étudiant", "id": "Nº d'identification", "title": "Feuille de réponses - Modèle", "course": "Cours", "date": "Date", "signature": "Signature",
         "instructions_title": "Instructions",
         "instructions_answers": "<b>Réponses:</b> Remplissez entièrement la case.",
@@ -42,6 +47,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorrect:"
     },
     "it": {
+        "voided": "ANNULLATA",  # drawn with OpenCV: ASCII only
         "name": "Nome dello studente", "id": "N. di identificazione", "title": "Foglio di risposte - Modello", "course": "Corso", "date": "Data", "signature": "Firma",
         "instructions_title": "Istruzioni",
         "instructions_answers": "<b>Risposte:</b> Riempire completamente la casella.",
@@ -50,6 +56,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Errato:"
     },
     "nl": {
+        "voided": "VERVALLEN",  # drawn with OpenCV: ASCII only
         "name": "Naam student", "id": "Identificatienummer", "title": "Antwoordblad - Model", "course": "Cursus", "date": "Datum", "signature": "Handtekening",
         "instructions_title": "Instructies",
         "instructions_answers": "<b>Antwoorden:</b> Vul het vak volledig in.",
@@ -58,6 +65,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorrect:"
     },
     "pt": {
+        "voided": "ANULADA",  # drawn with OpenCV: ASCII only
         "name": "Nome do aluno", "id": "Nº de identificação", "title": "Folha de respostas - Modelo", "course": "Curso", "date": "Data", "signature": "Assinatura",
         "instructions_title": "Instruções",
         "instructions_answers": "<b>Respostas:</b> Preencha a caixa completamente.",
@@ -66,6 +74,7 @@ LANG_STRINGS = {
         "instructions_example_incorrect": "Incorreto:"
     },
     "ru": {
+        "voided": "VOID",  # drawn with OpenCV: ASCII only
         "name": "Имя студента", "id": "Идентификационный номер", "title": "Лист ответов - Модель", "course": "Курс", "date": "Дата", "signature": "Подпись",
         "instructions_title": "Инструкции",
         "instructions_answers": "<b>Ответы:</b> Полностью заполните ячейку.",

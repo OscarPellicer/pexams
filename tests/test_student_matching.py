@@ -77,3 +77,33 @@ def test_match_scanned_students_fuzzy_matches_username_but_returns_configured_id
     assert matches[0].matched
     assert matches[0].roster_student_id == "FG03269"
     assert matches[0].match_type == "id-fuzzy"
+
+
+def test_names_module_identical_to_pevaluate_copy():
+    from pathlib import Path
+    import pytest
+    pevaluate_names = pytest.importorskip("autocorrect.names")
+    import pexams.names as ours
+    assert Path(ours.__file__).read_bytes() == Path(pevaluate_names.__file__).read_bytes()
+
+
+def test_names_normalize_and_symmetric_similarity():
+    from pexams.names import name_similarity, normalize_name
+    assert normalize_name("Pérez Gil, Ana") == "ana perez gil"
+    assert name_similarity("Arnau Julio", "Julio Candel, Arnau") == name_similarity("Julio Candel, Arnau", "Arnau Julio") >= 75
+
+
+def test_moodle_columns_module_identical_to_pevaluate_copy():
+    from pathlib import Path
+    import pytest
+    theirs = pytest.importorskip("autocorrect.moodle_columns")
+    import pexams.moodle_columns as ours
+    assert Path(ours.__file__).read_bytes() == Path(theirs.__file__).read_bytes()
+
+
+def test_moodle_columns_resolve_localised_headers():
+    from pexams.moodle_columns import find_column
+    cols = ["Identificador", "Nom complet", "Qualificació", "Comentaris de retroacció."]
+    assert find_column(cols, "Calificación", "grade") == "Qualificació"
+    assert find_column(cols, None, "feedback") == "Comentaris de retroacció."
+    assert find_column(cols, "", "name") is None and find_column(cols, None, "status") is None

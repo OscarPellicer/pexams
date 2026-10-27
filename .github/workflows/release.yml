@@ -19,7 +19,7 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest
+          python -m pip install -e ".[trocr]" pytest
           playwright install chromium
       - name: Run pytest suite
         run: python -m pytest tests -m "not llm"

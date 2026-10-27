@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import cv2
@@ -6,7 +5,9 @@ import numpy as np
 import pytest
 
 from pexams import layout
-from pexams.correct_exams import PX_PER_MM, _border_found, _read_header_llm
+from pexams.header_reading import read_header_llm
+from pexams.open_responses import border_found
+from pexams.scan_reading import PX_PER_MM
 from pexams.llm import parse_json_response, resolve_provider
 from pexams.schemas import PexamOption, PexamQuestion
 
@@ -34,9 +35,9 @@ def _page_with_box(x_mm, y_mm, w_mm, h_mm):
 def test_layout_check_finds_box_borders_only_where_printed():
     page = _page_with_box(10, 100, 170, 60)
     p = lambda v: int(v * PX_PER_MM)
-    assert _border_found(page, p(10), p(100), p(170), p(60), PX_PER_MM)
+    assert border_found(page, p(10), p(100), p(170), p(60), PX_PER_MM)
     # The same box expected 20 mm taller (a different version of the exam) is not found.
-    assert not _border_found(page, p(10), p(100), p(170), p(80), PX_PER_MM)
+    assert not border_found(page, p(10), p(100), p(170), p(80), PX_PER_MM)
 
 
 class _FakeLLM:
@@ -53,11 +54,11 @@ def test_read_header_llm_sends_three_boxes_and_parses_reply():
     q = PexamQuestion(id=1, text="d", options=[PexamOption(text=str(i), is_correct=(i == 0)) for i in range(5)])
     lay = layout.get_answer_sheet_layout(questions=[q])
     llm = _FakeLLM('{"model_id": "1", "student_id": "12345678A", "student_name": "Ana Pérez"}')
-    header = _read_header_llm(page, lay, lay, PX_PER_MM, llm, page_number=1)
+    header = read_header_llm(page, lay, lay, PX_PER_MM, llm, page_number=1)
     assert header == {"model_id": "1", "student_id": "12345678A", "student_name": "Ana Pérez"}
     assert llm.calls[0][1] == 3 and llm.calls[0][2] == "read_exam_header"
     # A failing call returns None so the caller falls back to TrOCR.
-    assert _read_header_llm(page, lay, lay, PX_PER_MM, _FakeLLM("not json"), page_number=1) is None
+    assert read_header_llm(page, lay, lay, PX_PER_MM, _FakeLLM("not json"), page_number=1) is None
 
 
 def test_llm_module_identical_to_pevaluate_copy():

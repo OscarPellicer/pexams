@@ -9,8 +9,14 @@ Models named with a bare Anthropic id (``claude-…``) are called through the of
 OpenRouter through the ``openai`` SDK. Every call can be appended to a JSONL provenance log
 (model actually served, effort, request id, token usage, hashes of the prompt and images), so
 a grading run can be traced and reported later.
+
+``complete(..., json_schema=schema)`` asks for structured output: Anthropic's native
+``output_config.format`` when the installed SDK supports it (otherwise a strict-JSON
+instruction), and a strict ``json_schema`` ``response_format`` on OpenRouter. The answer is
+checked to be a JSON object either way.
 """
 import base64
+import copy
 import datetime
 import hashlib
 import json
@@ -41,6 +47,15 @@ def _sha256(data) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_SECRET_PATTERN = re.compile(r"(sk-[A-Za-z0-9]{2,8}-|sk-|AIza|r8_)[A-Za-z0-9_\-]{8,}")
+
+
+def redact_secrets(text: str) -> str:
+    """Replace anything that looks like an API key (Anthropic/OpenAI/OpenRouter ``sk-…``,
+    Google ``AIza…``, Replicate ``r8_…``) by its prefix and ``[redacted]``."""
+    return _SECRET_PATTERN.sub(lambda m: m.group(1) + "[redacted]", str(text))
+
+
 def parse_json_response(text: str) -> dict:
     """Extract the first JSON object from a model response (tolerates code fences)."""
     text = (text or "").strip()
@@ -51,6 +66,58 @@ def parse_json_response(text: str) -> dict:
     if match:
         text = match.group(0)
     return json.loads(text)
+
+
+def strict_json_schema(schema: dict) -> dict:
+    """Copy of ``schema`` in the strict form OpenAI-style structured outputs require: every
+    object forbids extra properties and lists all its properties as required."""
+    schema = copy.deepcopy(schema)
+
+    def visit(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" or "properties" in node:
+                node["additionalProperties"] = False
+                if node.get("properties"):
+                    node["required"] = list(node["properties"].keys())
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(schema)
+    return schema
+
+
+def _anthropic_structured_output_supported() -> bool:
+    """True when the installed anthropic SDK accepts ``output_config={"format": ...}``."""
+    try:
+        from anthropic.types import OutputConfigParam
+    except ImportError:
+        return False
+    return "format" in getattr(OutputConfigParam, "__annotations__", {})
+
+
+def _anthropic_schema(schema: dict) -> dict:
+    """Schema in the subset Anthropic accepts; the SDK's ``transform_schema`` moves unsupported
+    constraints (e.g. ``minItems: 3``) into the descriptions."""
+    try:
+        from anthropic import transform_schema
+    except ImportError:
+        transform_schema = None
+    if transform_schema is not None:
+        try:
+            return transform_schema(copy.deepcopy(schema))
+        except Exception:
+            pass
+    return strict_json_schema(schema)
+
+
+def _schema_instruction(schema: dict) -> str:
+    return (
+        "\n\nRespond with a single JSON object, and nothing else, that matches this JSON Schema:\n"
+        + json.dumps(schema, ensure_ascii=False)
+    )
 
 
 class LLMClient:
@@ -75,7 +142,9 @@ class LLMClient:
         self.tool = tool
         default_env = "ANTHROPIC_API_KEY" if self.provider == "anthropic" else "OPENROUTER_API_KEY"
         self.api_key_env = api_key_env or default_env
-        api_key = os.getenv(self.api_key_env)
+        # Strip whitespace and quotes: a .env with Windows line endings leaves a trailing "\r",
+        # which httpx rejects as an illegal header value (reported only as "Connection error").
+        api_key = (os.getenv(self.api_key_env) or "").strip().strip("\"'")
         if not api_key:
             raise RuntimeError(f"{self.api_key_env} is not set (needed for {self.provider} model {model}).")
         if self.provider == "anthropic":
@@ -99,12 +168,29 @@ class LLMClient:
         json_output: bool = False,
         purpose: str = "",
         context: Optional[dict] = None,
+        json_schema: Optional[dict] = None,
+        schema_name: str = "",
     ) -> Tuple[str, dict]:
+        """``json_schema`` (e.g. ``Model.model_json_schema()``) requests structured output and
+        implies ``json_output``; the text returned is then a JSON object (``ValueError`` if not)."""
         start = time.time()
-        if self.provider == "anthropic":
-            text, served, request_id, stop_reason, usage, fallback_used = self._anthropic(prompt, images, system, max_tokens)
-        else:
-            text, served, request_id, stop_reason, usage, fallback_used = self._openrouter(prompt, images, system, max_tokens, json_output)
+        output_format = "json_schema" if json_schema else ("json_object" if json_output else "text")
+        try:
+            if self.provider == "anthropic":
+                if json_schema and not _anthropic_structured_output_supported():
+                    output_format = "json_instruction"
+                    prompt = prompt + _schema_instruction(json_schema)
+                    json_schema = None
+                text, served, request_id, stop_reason, usage, fallback_used = self._anthropic(prompt, images, system, max_tokens, json_schema)
+            else:
+                text, served, request_id, stop_reason, usage, fallback_used = self._openrouter(
+                    prompt, images, system, max_tokens, json_output, json_schema, schema_name
+                )
+        except Exception as e:
+            # SDK errors can carry the request headers, API key included, in their message or in
+            # the exception chain (e.g. httpx "Illegal header value b'sk-…'"). Re-raise a redacted
+            # message and drop the chain, so a key never reaches a log, a report or the console.
+            raise RuntimeError(f"{type(e).__name__}: {redact_secrets(str(e))}") from None
         meta = {
             "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "tool": self.tool,
@@ -117,6 +203,7 @@ class LLMClient:
             "fallback_used": fallback_used,
             "effort": self.effort,
             "max_tokens": max_tokens,
+            "output_format": output_format,
             "request_id": request_id,
             "stop_reason": stop_reason,
             "usage": usage,
@@ -132,9 +219,18 @@ class LLMClient:
                 f.write(json.dumps(meta, ensure_ascii=False) + "\n")
         if stop_reason == "refusal":
             raise RuntimeError(f"The model declined the request ({purpose}).")
+        if output_format in ("json_schema", "json_instruction"):
+            try:
+                parsed = parse_json_response(text)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if not isinstance(parsed, dict):
+                raise ValueError(f"The model did not return a JSON object ({purpose}, stop reason {stop_reason}).")
+            if output_format == "json_instruction":
+                text = json.dumps(parsed, ensure_ascii=False)
         return text, meta
 
-    def _anthropic(self, prompt, images, system, max_tokens):
+    def _anthropic(self, prompt, images, system, max_tokens, json_schema=None):
         content = [
             {"type": "image", "source": {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(data).decode("ascii")}}
             for data, mime in images
@@ -143,8 +239,13 @@ class LLMClient:
         params = {"model": self.model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
         if system:
             params["system"] = system
+        output_config = {}
         if self.effort:
-            params["output_config"] = {"effort": self.effort}
+            output_config["effort"] = self.effort
+        if json_schema:
+            output_config["format"] = {"type": "json_schema", "schema": _anthropic_schema(json_schema)}
+        if output_config:
+            params["output_config"] = output_config
         # Streaming keeps long requests alive and avoids HTTP timeouts on large outputs.
         if self.model in _FALLBACK_MODELS:
             stream = self._client.beta.messages.stream(betas=[_FALLBACK_BETA], fallbacks="default", **params)
@@ -162,7 +263,7 @@ class LLMClient:
         }
         return text, response.model, getattr(response, "_request_id", None), response.stop_reason, usage, fallback_used
 
-    def _openrouter(self, prompt, images, system, max_tokens, json_output):
+    def _openrouter(self, prompt, images, system, max_tokens, json_output, json_schema=None, schema_name=""):
         user_content = [{"type": "text", "text": prompt}] + [
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")}}
             for data, mime in images
@@ -175,9 +276,20 @@ class LLMClient:
             # Gemini Flash reasons by default; minimal effort avoids paying for reasoning tokens.
             extra_body["reasoning"] = {"effort": "minimal"}
         params = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "extra_body": extra_body}
-        if json_output:
+        if json_schema:
+            name = re.sub(r"[^A-Za-z0-9_-]", "_", schema_name or str(json_schema.get("title") or "structured_output"))[:64]
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": True, "schema": strict_json_schema(json_schema)},
+            }
+        elif json_output:
             params["response_format"] = {"type": "json_object"}
         response = self._client.chat.completions.create(**params)
+        # OpenRouter reports upstream failures (rate limits, provider errors) inside a 200 response.
+        error = getattr(response, "error", None)
+        if error or not getattr(response, "choices", None):
+            message = error.get("message", error) if isinstance(error, dict) else (error or "no choices in the response")
+            raise RuntimeError(f"OpenRouter returned an error for {self.model}: {message}")
         choice = response.choices[0]
         usage = {
             "input_tokens": getattr(response.usage, "prompt_tokens", None),

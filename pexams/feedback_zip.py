@@ -4,11 +4,11 @@ import re
 import tempfile
 import zipfile
 import base64
-import unicodedata
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+from pexams.moodle_columns import find_column
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -30,73 +30,23 @@ class FeedbackCsvResult:
     unmatched_marks: int
 
 
-COLUMN_ALIASES = {
-    "id": [
-        "Numero ID", "Número ID", "Nº ID", "N. ID", "ID number", "Student ID",
-        "Identificador de estudiante", "Identificador de l'estudiant", "NÃºmero ID",
-    ],
-    "participant": [
-        "Identificador", "Identifier", "Participant", "Participant ID",
-        "Participant identifier", "Identificador del participant",
-    ],
-    "name": [
-        "Nom complet", "Nombre completo", "Full name", "Name", "Cognoms i nom",
-        "Apellidos y nombre", "Cognoms", "Nombre",
-    ],
-    "feedback": [
-        "Comentaris de retroacció.", "Comentaris de retroacció",
-        "Comentarios de retroacción.", "Comentarios de retroacción",
-        "Comentarios de retroalimentación.", "Comentarios de retroalimentación",
-        "Feedback comments", "Feedback", "Comentaris de retroacciÃ³.",
-    ],
-    "grade": [
-        "Qualificació", "Qualificació.", "Calificación", "Calificación.",
-        "Grade", "Nota", "Puntuación", "QualificaciÃ³",
-    ],
-    "mark": ["mark", "Mark", "Nota", "Grade", "Qualificació", "Calificación"],
-    "image_id": ["student_id", "Student ID", "Numero ID", "Número ID", "NÃºmero ID"],
-}
-
-
 def _normalise_id(value) -> str:
     if pd.isna(value):
         return ""
     return re.sub(r"\s+", "", str(value).strip().upper())
 
 
-def _normalise_column_name(value: str) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.lower()
-    return re.sub(r"[^a-z0-9]+", "", text)
-
-
 def _resolve_column(df: pd.DataFrame, requested: Optional[str], role: str, source: str, required: bool = True) -> Optional[str]:
     columns = list(df.columns)
-    if requested == "":
-        return None
-    if requested and requested in columns:
-        return requested
-
-    lookup = {_normalise_column_name(col): col for col in columns}
-    candidates = []
-    if requested:
-        candidates.append(requested)
-    candidates.extend(COLUMN_ALIASES.get(role, []))
-
-    for candidate in candidates:
-        resolved = lookup.get(_normalise_column_name(candidate))
-        if resolved:
-            if requested and requested != resolved:
-                logging.info("Resolved Moodle column '%s' to '%s' in %s.", requested, resolved, source)
-            return resolved
-
-    if required:
+    resolved = find_column(columns, requested, role)
+    if resolved and requested and requested != resolved:
+        logging.info("Resolved Moodle column '%s' to '%s' in %s.", requested, resolved, source)
+    if resolved is None and required and requested != "":
         raise ValueError(
             f"Column '{requested or role}' not found in {source}. "
             f"Available columns: {', '.join(str(c) for c in columns)}"
         )
-    return None
+    return resolved
 
 
 def _safe_moodle_name(value: str) -> str:
@@ -253,6 +203,126 @@ def _build_roster_map(
     return roster, skipped
 
 
+_UNMATCHED_ROSTER_STATUSES = {"no mark", "missing id or participant"}
+_UNMATCHED_MARK_STATUSES = {"unmatched mark", "missing image"}
+
+
+@dataclass
+class _FeedbackInputs:
+    """The Moodle roster and the pexams marks, read and with their columns resolved."""
+    moodle_df: pd.DataFrame
+    marks_df: pd.DataFrame
+    images_dir: str
+    moodle_csv: str
+    marks_csv: str
+    id_column: str
+    participant_column: str
+    name_column: str
+    image_id_column: str = ""
+    mark_column: str = ""
+
+    def resolve_mark_columns(self, image_id_column: str, mark_column: str) -> None:
+        self.image_id_column = _resolve_column(self.marks_df, image_id_column, "image_id", self.marks_csv)
+        self.mark_column = _resolve_column(self.marks_df, mark_column, "mark", self.marks_csv)
+
+
+def _load_feedback_inputs(
+    moodle_csv: str,
+    correction_dir: str,
+    output_path: str,
+    output_kind: str,
+    id_column: str,
+    participant_column: str,
+    name_column: str,
+    images_dir: Optional[str],
+    marks_csv: Optional[str],
+    moodle_encoding: str,
+    moodle_sep: str,
+    overwrite: bool,
+) -> _FeedbackInputs:
+    """Check the inputs exist (and the output does not, unless ``overwrite``), read the Moodle
+    roster and the marks, and resolve the roster's (possibly localised) column names. The
+    marks columns are resolved afterwards with ``resolve_mark_columns``."""
+    if images_dir is None:
+        images_dir = os.path.join(correction_dir, "scanned_pages")
+    if marks_csv is None:
+        marks_csv = os.path.join(correction_dir, "final_marks.csv")
+
+    if not os.path.exists(moodle_csv):
+        raise FileNotFoundError(f"Moodle CSV not found: {moodle_csv}")
+    if not os.path.exists(marks_csv):
+        raise FileNotFoundError(f"Marks CSV not found: {marks_csv}")
+    if not os.path.isdir(images_dir):
+        raise FileNotFoundError(f"Annotated images directory not found: {images_dir}")
+    if os.path.exists(output_path) and not overwrite:
+        raise FileExistsError(
+            f"Output {output_kind} already exists: {output_path}. Use overwrite=True to replace it."
+        )
+
+    moodle_df = _read_table(moodle_csv, encoding=moodle_encoding, sep=moodle_sep)
+    marks_df = pd.read_csv(marks_csv)
+    return _FeedbackInputs(
+        moodle_df=moodle_df,
+        marks_df=marks_df,
+        images_dir=images_dir,
+        moodle_csv=moodle_csv,
+        marks_csv=marks_csv,
+        id_column=_resolve_column(moodle_df, id_column, "id", moodle_csv),
+        participant_column=_resolve_column(moodle_df, participant_column, "participant", moodle_csv),
+        name_column=_resolve_column(moodle_df, name_column, "name", moodle_csv),
+    )
+
+
+def _manifest_row(
+    status: str,
+    student_id: str,
+    participant: str = "",
+    name: str = "",
+    mark: str = "",
+    source_image: str = "",
+    zip_path: Optional[str] = None,
+) -> dict:
+    """One manifest line; ``zip_path`` is a column only in the zip manifest."""
+    row = {
+        "student_id": student_id,
+        "moodle_participant": participant,
+        "name": name,
+        "mark": mark,
+        "source_image": source_image,
+    }
+    if zip_path is not None:
+        row["zip_path"] = zip_path
+    row["status"] = status
+    return row
+
+
+def _skipped_roster_rows(skipped_roster: List[dict], zip_path: Optional[str] = None) -> List[dict]:
+    return [
+        _manifest_row(row["reason"], row["student_id"], name=row["name"], zip_path=zip_path)
+        for row in skipped_roster
+    ]
+
+
+def _write_manifest(output_path: str, manifest_rows: List[dict]) -> Tuple[str, int, int]:
+    """Write ``<output>_manifest.csv``; return its path and the unmatched roster/mark counts."""
+    manifest_csv = os.path.splitext(output_path)[0] + "_manifest.csv"
+    pd.DataFrame(manifest_rows).to_csv(manifest_csv, index=False)
+    unmatched_roster = sum(1 for row in manifest_rows if row["status"] in _UNMATCHED_ROSTER_STATUSES)
+    unmatched_marks = sum(1 for row in manifest_rows if row["status"] in _UNMATCHED_MARK_STATUSES)
+    return manifest_csv, unmatched_roster, unmatched_marks
+
+
+def _feedback_html(student_id: str, rendered_png: str, mark_text: str, max_mark: str) -> str:
+    """Feedback-comment HTML: the mark and the annotated page as a base64 PNG."""
+    with open(rendered_png, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+    return (
+        f'<p><strong>Pexams mark:</strong> {mark_text} / {max_mark}</p>'
+        f'<p><img alt="Pexams feedback {student_id}" '
+        f'src="data:image/png;base64,{encoded}"></p>'
+    )
+
+
 def create_moodle_feedback_zip(
     moodle_csv: str,
     correction_dir: str,
@@ -275,30 +345,14 @@ def create_moodle_feedback_zip(
     if feedback_file_format not in {"pdf", "png"}:
         raise ValueError("feedback_file_format must be 'pdf' or 'png'")
 
-    if images_dir is None:
-        images_dir = os.path.join(correction_dir, "scanned_pages")
-    if marks_csv is None:
-        marks_csv = os.path.join(correction_dir, "final_marks.csv")
-
-    if not os.path.exists(moodle_csv):
-        raise FileNotFoundError(f"Moodle CSV not found: {moodle_csv}")
-    if not os.path.exists(marks_csv):
-        raise FileNotFoundError(f"Marks CSV not found: {marks_csv}")
-    if not os.path.isdir(images_dir):
-        raise FileNotFoundError(f"Annotated images directory not found: {images_dir}")
-    if os.path.exists(output_zip) and not overwrite:
-        raise FileExistsError(f"Output zip already exists: {output_zip}. Use overwrite=True to replace it.")
-
-    moodle_df = _read_table(moodle_csv, encoding=moodle_encoding, sep=moodle_sep)
-    marks_df = pd.read_csv(marks_csv)
-
-    id_column = _resolve_column(moodle_df, id_column, "id", moodle_csv)
-    participant_column = _resolve_column(moodle_df, participant_column, "participant", moodle_csv)
-    name_column = _resolve_column(moodle_df, name_column, "name", moodle_csv)
-    image_id_column = _resolve_column(marks_df, image_id_column, "image_id", marks_csv)
-    mark_column = _resolve_column(marks_df, mark_column, "mark", marks_csv)
-
-    roster, skipped_roster = _build_roster_map(moodle_df, id_column, participant_column, name_column)
+    inputs = _load_feedback_inputs(
+        moodle_csv, correction_dir, output_zip, "zip", id_column, participant_column, name_column,
+        images_dir, marks_csv, moodle_encoding, moodle_sep, overwrite,
+    )
+    inputs.resolve_mark_columns(image_id_column, mark_column)
+    roster, skipped_roster = _build_roster_map(
+        inputs.moodle_df, inputs.id_column, inputs.participant_column, inputs.name_column
+    )
     os.makedirs(os.path.dirname(os.path.abspath(output_zip)) or ".", exist_ok=True)
 
     manifest_rows: List[dict] = []
@@ -307,33 +361,21 @@ def create_moodle_feedback_zip(
 
     with tempfile.TemporaryDirectory(prefix="pexams_feedback_") as work_dir:
         with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for _, mark_row in marks_df.iterrows():
-                student_id = _normalise_id(mark_row.get(image_id_column))
+            for _, mark_row in inputs.marks_df.iterrows():
+                student_id = _normalise_id(mark_row.get(inputs.image_id_column))
+                mark = mark_row.get(inputs.mark_column)
                 roster_row = roster.get(student_id)
                 if not roster_row:
-                    manifest_rows.append({
-                        "student_id": student_id,
-                        "moodle_participant": "",
-                        "name": "",
-                        "mark": _format_mark(mark_row.get(mark_column)),
-                        "source_image": "",
-                        "zip_path": "",
-                        "status": "unmatched mark",
-                    })
+                    manifest_rows.append(_manifest_row(
+                        "unmatched mark", student_id, mark=_format_mark(mark), zip_path=""))
                     continue
 
-                source_image = _find_image(images_dir, student_id)
+                matched_roster_ids.add(student_id)
+                source_image = _find_image(inputs.images_dir, student_id)
                 if not source_image:
-                    manifest_rows.append({
-                        "student_id": student_id,
-                        "moodle_participant": roster_row["participant"],
-                        "name": roster_row["name"],
-                        "mark": _format_mark(mark_row.get(mark_column)),
-                        "source_image": "",
-                        "zip_path": "",
-                        "status": "missing image",
-                    })
-                    matched_roster_ids.add(student_id)
+                    manifest_rows.append(_manifest_row(
+                        "missing image", student_id, roster_row["participant"], roster_row["name"],
+                        _format_mark(mark), zip_path=""))
                     continue
 
                 moodle_name = _safe_moodle_name(roster_row["name"])
@@ -345,49 +387,23 @@ def create_moodle_feedback_zip(
                     output_file=rendered_path,
                     display_name=roster_row["name"] or student_id,
                     student_id=student_id,
-                    mark=mark_row.get(mark_column),
+                    mark=mark,
                     max_mark=max_mark,
                     file_format=feedback_file_format,
                 )
                 zf.write(rendered_path, archive_name)
                 added += 1
-                matched_roster_ids.add(student_id)
-                manifest_rows.append({
-                    "student_id": student_id,
-                    "moodle_participant": roster_row["participant"],
-                    "name": roster_row["name"],
-                    "mark": _format_mark(mark_row.get(mark_column)),
-                    "source_image": source_image,
-                    "zip_path": archive_name,
-                    "status": "added",
-                })
+                manifest_rows.append(_manifest_row(
+                    "added", student_id, roster_row["participant"], roster_row["name"],
+                    _format_mark(mark), source_image, zip_path=archive_name))
 
-    for row in skipped_roster:
-        manifest_rows.append({
-            "student_id": row["student_id"],
-            "moodle_participant": "",
-            "name": row["name"],
-            "mark": "",
-            "source_image": "",
-            "zip_path": "",
-            "status": row["reason"],
-        })
+    manifest_rows.extend(_skipped_roster_rows(skipped_roster, zip_path=""))
     for student_id, row in roster.items():
         if student_id not in matched_roster_ids:
-            manifest_rows.append({
-                "student_id": student_id,
-                "moodle_participant": row["participant"],
-                "name": row["name"],
-                "mark": "",
-                "source_image": "",
-                "zip_path": "",
-                "status": "no mark",
-            })
+            manifest_rows.append(_manifest_row(
+                "no mark", student_id, row["participant"], row["name"], zip_path=""))
 
-    manifest_csv = os.path.splitext(output_zip)[0] + "_manifest.csv"
-    pd.DataFrame(manifest_rows).to_csv(manifest_csv, index=False)
-    unmatched_roster = sum(1 for row in manifest_rows if row["status"] in {"no mark", "missing id or participant"})
-    unmatched_marks = sum(1 for row in manifest_rows if row["status"] in {"unmatched mark", "missing image"})
+    manifest_csv, unmatched_roster, unmatched_marks = _write_manifest(output_zip, manifest_rows)
 
     logging.info("Created Moodle feedback zip: %s (%d file(s))", os.path.abspath(output_zip), added)
     logging.info("Created Moodle feedback manifest: %s", os.path.abspath(manifest_csv))
@@ -399,6 +415,15 @@ def create_moodle_feedback_zip(
         unmatched_roster=unmatched_roster,
         unmatched_marks=unmatched_marks,
     )
+
+
+def _ensure_object_column(df: pd.DataFrame, column: Optional[str]) -> None:
+    """Add ``column`` (empty) if missing and make it hold strings."""
+    if not column:
+        return
+    if column not in df.columns:
+        df[column] = ""
+    df[column] = df[column].astype("object")
 
 
 def create_moodle_feedback_csv(
@@ -421,88 +446,52 @@ def create_moodle_feedback_csv(
     overwrite: bool = False,
 ) -> FeedbackCsvResult:
     """Create a Moodle grading CSV with base64 PNGs embedded in the feedback column."""
-    if images_dir is None:
-        images_dir = os.path.join(correction_dir, "scanned_pages")
-    if marks_csv is None:
-        marks_csv = os.path.join(correction_dir, "final_marks.csv")
-
-    if not os.path.exists(moodle_csv):
-        raise FileNotFoundError(f"Moodle CSV not found: {moodle_csv}")
-    if not os.path.exists(marks_csv):
-        raise FileNotFoundError(f"Marks CSV not found: {marks_csv}")
-    if not os.path.isdir(images_dir):
-        raise FileNotFoundError(f"Annotated images directory not found: {images_dir}")
-    if os.path.exists(output_csv) and not overwrite:
-        raise FileExistsError(f"Output CSV already exists: {output_csv}. Use overwrite=True to replace it.")
-
-    moodle_df = _read_table(moodle_csv, encoding=moodle_encoding, sep=moodle_sep)
-    marks_df = pd.read_csv(marks_csv)
-
-    id_column = _resolve_column(moodle_df, id_column, "id", moodle_csv)
-    participant_column = _resolve_column(moodle_df, participant_column, "participant", moodle_csv)
-    name_column = _resolve_column(moodle_df, name_column, "name", moodle_csv)
+    inputs = _load_feedback_inputs(
+        moodle_csv, correction_dir, output_csv, "CSV", id_column, participant_column, name_column,
+        images_dir, marks_csv, moodle_encoding, moodle_sep, overwrite,
+    )
+    moodle_df = inputs.moodle_df
     feedback_column = _resolve_column(moodle_df, feedback_column, "feedback", moodle_csv, required=False) or feedback_column
     grade_column = _resolve_column(moodle_df, grade_column, "grade", moodle_csv, required=False) if grade_column else None
-    image_id_column = _resolve_column(marks_df, image_id_column, "image_id", marks_csv)
-    mark_column = _resolve_column(marks_df, mark_column, "mark", marks_csv)
+    inputs.resolve_mark_columns(image_id_column, mark_column)
+    mark_column = inputs.mark_column
+    _ensure_object_column(moodle_df, feedback_column)
+    _ensure_object_column(moodle_df, grade_column)
 
-    if feedback_column not in moodle_df.columns:
-        moodle_df[feedback_column] = ""
-    moodle_df[feedback_column] = moodle_df[feedback_column].astype("object")
-    if grade_column and grade_column not in moodle_df.columns:
-        moodle_df[grade_column] = ""
-    if grade_column:
-        moodle_df[grade_column] = moodle_df[grade_column].astype("object")
-
-    roster, skipped_roster = _build_roster_map(moodle_df, id_column, participant_column, name_column)
+    roster, skipped_roster = _build_roster_map(
+        moodle_df, inputs.id_column, inputs.participant_column, inputs.name_column
+    )
     mark_by_id = {
-        _normalise_id(row.get(image_id_column)): row
-        for _, row in marks_df.iterrows()
-        if _normalise_id(row.get(image_id_column))
+        _normalise_id(row.get(inputs.image_id_column)): row
+        for _, row in inputs.marks_df.iterrows()
+        if _normalise_id(row.get(inputs.image_id_column))
     }
 
     manifest_rows: List[dict] = []
     added = 0
-    matched_roster_ids = set()
 
     with tempfile.TemporaryDirectory(prefix="pexams_feedback_csv_") as work_dir:
         for index, moodle_row in moodle_df.iterrows():
-            student_id = _normalise_id(moodle_row.get(id_column))
+            student_id = _normalise_id(moodle_row.get(inputs.id_column))
             roster_row = roster.get(student_id)
             mark_row = mark_by_id.get(student_id)
 
             if not roster_row:
-                manifest_rows.append({
-                    "student_id": student_id,
-                    "moodle_participant": "",
-                    "name": str(moodle_row.get(name_column, "")),
-                    "mark": "",
-                    "source_image": "",
-                    "status": "missing id or participant",
-                })
+                manifest_rows.append(_manifest_row(
+                    "missing id or participant", student_id,
+                    name=str(moodle_row.get(inputs.name_column, ""))))
                 continue
             if mark_row is None:
-                manifest_rows.append({
-                    "student_id": student_id,
-                    "moodle_participant": roster_row["participant"],
-                    "name": roster_row["name"],
-                    "mark": "",
-                    "source_image": "",
-                    "status": "no mark",
-                })
+                manifest_rows.append(_manifest_row(
+                    "no mark", student_id, roster_row["participant"], roster_row["name"]))
                 continue
 
-            source_image = _find_image(images_dir, student_id)
+            mark = mark_row.get(mark_column)
+            mark_text = _format_mark(mark)
+            source_image = _find_image(inputs.images_dir, student_id)
             if not source_image:
-                manifest_rows.append({
-                    "student_id": student_id,
-                    "moodle_participant": roster_row["participant"],
-                    "name": roster_row["name"],
-                    "mark": _format_mark(mark_row.get(mark_column)),
-                    "source_image": "",
-                    "status": "missing image",
-                })
-                matched_roster_ids.add(student_id)
+                manifest_rows.append(_manifest_row(
+                    "missing image", student_id, roster_row["participant"], roster_row["name"], mark_text))
                 continue
 
             rendered_path = os.path.join(work_dir, f"pexams_feedback_{student_id}.png")
@@ -511,60 +500,28 @@ def create_moodle_feedback_csv(
                 output_image=rendered_path,
                 display_name=roster_row["name"] or student_id,
                 student_id=student_id,
-                mark=mark_row.get(mark_column),
+                mark=mark,
                 max_mark=max_mark,
             )
-            with open(rendered_path, "rb") as f:
-                encoded = base64.b64encode(f.read()).decode("ascii")
-
-            mark_text = _format_mark(mark_row.get(mark_column))
-            moodle_df.at[index, feedback_column] = (
-                f'<p><strong>Pexams mark:</strong> {mark_text} / {max_mark}</p>'
-                f'<p><img alt="Pexams feedback {student_id}" '
-                f'src="data:image/png;base64,{encoded}"></p>'
-            )
+            moodle_df.at[index, feedback_column] = _feedback_html(student_id, rendered_path, mark_text, max_mark)
             if grade_column:
-                moodle_df.at[index, grade_column] = _format_mark_for_csv(mark_row.get(mark_column), csv_decimal_sep)
+                moodle_df.at[index, grade_column] = _format_mark_for_csv(mark, csv_decimal_sep)
 
             added += 1
-            matched_roster_ids.add(student_id)
-            manifest_rows.append({
-                "student_id": student_id,
-                "moodle_participant": roster_row["participant"],
-                "name": roster_row["name"],
-                "mark": mark_text,
-                "source_image": source_image,
-                "status": "added",
-            })
+            manifest_rows.append(_manifest_row(
+                "added", student_id, roster_row["participant"], roster_row["name"], mark_text, source_image))
 
     for student_id, mark_row in mark_by_id.items():
         if student_id not in roster:
-            manifest_rows.append({
-                "student_id": student_id,
-                "moodle_participant": "",
-                "name": "",
-                "mark": _format_mark(mark_row.get(mark_column)),
-                "source_image": "",
-                "status": "unmatched mark",
-            })
-    for row in skipped_roster:
-        manifest_rows.append({
-            "student_id": row["student_id"],
-            "moodle_participant": "",
-            "name": row["name"],
-            "mark": "",
-            "source_image": "",
-            "status": row["reason"],
-        })
+            manifest_rows.append(_manifest_row(
+                "unmatched mark", student_id, mark=_format_mark(mark_row.get(mark_column))))
+    manifest_rows.extend(_skipped_roster_rows(skipped_roster))
 
     os.makedirs(os.path.dirname(os.path.abspath(output_csv)) or ".", exist_ok=True)
     sep = ";" if moodle_sep == "semi" else moodle_sep
     moodle_df.to_csv(output_csv, index=False, encoding=moodle_encoding, sep=sep)
 
-    manifest_csv = os.path.splitext(output_csv)[0] + "_manifest.csv"
-    pd.DataFrame(manifest_rows).to_csv(manifest_csv, index=False)
-    unmatched_roster = sum(1 for row in manifest_rows if row["status"] in {"no mark", "missing id or participant"})
-    unmatched_marks = sum(1 for row in manifest_rows if row["status"] in {"unmatched mark", "missing image"})
+    manifest_csv, unmatched_roster, unmatched_marks = _write_manifest(output_csv, manifest_rows)
 
     logging.info("Created Moodle feedback CSV: %s (%d row(s))", os.path.abspath(output_csv), added)
     logging.info("Created Moodle feedback CSV manifest: %s", os.path.abspath(manifest_csv))

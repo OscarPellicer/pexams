@@ -4,7 +4,8 @@ import json
 from pypdf import PdfReader
 
 from pexams import utils
-from pexams.generate_exams import PRINT_CONTENT_HEIGHT_MM, generate_exams
+from pexams.generate_exams import generate_exams
+from pexams.print_layout import PRINT_CONTENT_HEIGHT_MM
 from pexams.schemas import PexamOption, PexamQuestion
 
 USABLE_BOTTOM_MM = PRINT_CONTENT_HEIGHT_MM - 14  # bottom reserve kept free for the markers and footer

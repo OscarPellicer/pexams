@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from pexams.correct_exams import _find_fiducial_markers
+from pexams.scan_reading import find_fiducial_markers
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +90,7 @@ def test_fiducials_are_detected_on_synthetic_problem_scans(add_false_positive_te
     image = _make_synthetic_scan(expected, add_false_positive_text=add_false_positive_text)
     page_name = f"synthetic_false_positive_{add_false_positive_text}"
 
-    corners = _find_fiducial_markers(image, debug_dir=str(tmp_path), page_number=page_name)
+    corners = find_fiducial_markers(image, debug_dir=str(tmp_path), page_number=page_name)
 
     assert corners is not None
     np.testing.assert_allclose(corners, expected, atol=10)
@@ -116,7 +116,7 @@ def test_fiducials_survive_small_rotation_and_contrast_changes(degrees, alpha, b
     rotated, matrix = _rotate_image(image, degrees)
     adjusted = _adjust_brightness_contrast(rotated, alpha, beta)
 
-    corners = _find_fiducial_markers(
+    corners = find_fiducial_markers(
         adjusted,
         debug_dir=str(tmp_path),
         page_number=f"jocarchi_rot_{degrees}_alpha_{alpha}_beta_{beta}",

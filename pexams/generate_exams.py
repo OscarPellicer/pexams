@@ -1,149 +1,81 @@
-import base64
-import logging
-import re
+"""Exam PDF generation: HTML for the answer sheet and question pages, rendered and paginated
+with Playwright, plus the per-model question files and open-answer box positions."""
 import json
-from typing import List, Optional, Union
-import random
+import logging
 import os
-import markdown
-from pathlib import Path
-from playwright.sync_api import sync_playwright, Error as PlaywrightError
-from faker import Faker
-import cv2
-import numpy as np
 from copy import deepcopy
-from pypdf import PdfWriter, PdfReader
+from pathlib import Path
+from typing import List, Optional, Union
 
-from pexams.schemas import PexamQuestion, PexamExam
-from pexams import layout
-from pexams import utils
+from pypdf import PdfReader, PdfWriter
+
+from pexams import layout, utils
+from pexams.markdown_render import absolute_markdown_images, limit_image_size as _limit_image_size, render_markdown as _render_markdown, resolve_relative_media_uris as _resolve_relative_media_uris
+from pexams.pdf_render import MATHJAX_ARITHMATEX_CONFIG, PlaywrightError, head_assets, html_to_pdf
+from pexams.print_layout import (
+    PRINT_CONTENT_WIDTH_MM, PX_PER_MM_CSS, extract_open_answer_area_metadata,
+    keep_questions_within_pages, wrap_pages_with_header_footer,
+)
+from pexams.schemas import PexamExam, PexamQuestion
 from pexams.translations import LANG_STRINGS
 
-
-def _is_relative_media_path(src: str) -> bool:
-    """True if src should be resolved against a base directory (not http(s), file:, data:, or absolute)."""
-    s = src.strip()
-    if not s or s.startswith("#"):
-        return False
-    low = s.lower()
-    if low.startswith(("http://", "https://", "data:", "file:")):
-        return False
-    if s.startswith("//"):
-        return False
-    try:
-        return not Path(s).is_absolute()
-    except Exception:
-        return True
+EXAM_FONTS_URL = ("https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800"
+                  "&family=Roboto:ital,wght@0,300;0,400;0,500;0,700&display=swap")
+COLUMN_CLASSES = {1: "", 2: "two-columns", 3: "three-columns"}
 
 
-def _resolve_relative_media_uris(html: str, base_dir: str) -> str:
-    """
-    Rewrite relative img/video/audio src attributes to file:// URIs.
-
-    When the exam HTML is opened via file:///.../exam_model_1.html, relative paths are
-    resolved against the HTML file's directory, not the source markdown folder — so
-    ![](fig.png) beside the .md file must become an absolute file URI.
-    """
-    if not html or not base_dir:
-        return html
-    base_dir = os.path.abspath(base_dir)
-
-    def repl(match) -> str:
-        quote = match.group(1)
-        path = match.group(2)
-        if not _is_relative_media_path(path):
-            return match.group(0)
-        abs_path = os.path.normpath(os.path.join(base_dir, path))
-        try:
-            uri = Path(abs_path).as_uri()
-        except ValueError:
-            return match.group(0)
-        return f"src={quote}{uri}{quote}"
-
-    return re.sub(r"\bsrc=(['\"])([^'\"]+)\1", repl, html, flags=re.IGNORECASE)
+def _abs_style(x, y, width=None, height=None) -> str:
+    """Inline style placing an element at (x, y) mm, optionally sized in mm."""
+    style = f"position: absolute; left: {x}mm; top: {y}mm;"
+    if width is not None:
+        style += f" width: {width}mm;"
+    if height is not None:
+        style += f" height: {height}mm;"
+    return style
 
 
-def _generate_answer_sheet_html(
-    questions: List[PexamQuestion],
-    exam_model: int,
-    exam_title: str,
-    exam_course: Optional[str],
-    exam_date: Optional[str],
-    lang: str = "en",
-    header_only: bool = False,
-) -> str:
-    """Generates the pure HTML for the answer sheet with absolutely positioned elements.
+def _box_style(coords) -> str:
+    """Inline style for a layout rectangle (``top_left``/``bottom_right`` in mm)."""
+    x, y = coords.top_left
+    return _abs_style(x, y, coords.bottom_right[0] - x, coords.bottom_right[1] - y)
 
-    With ``header_only`` only the title, model box and student fields are returned (no
-    instructions or answer grid), at the same coordinates as on the answer sheet, so they
-    can be placed at the top of the first question page and still be read by the corrector.
-    """
 
-    selected_lang = LANG_STRINGS.get(lang, LANG_STRINGS["en"])
-    
-    layout_data = layout.get_answer_sheet_layout(questions)
-    html_elements = []
-
-    # --- Header Elements ---
-    style_title = f"position: absolute; left: {layout_data.exam_title[0]}mm; top: {layout_data.exam_title[1]}mm; width: {layout_data.exam_title_width}mm;"
-    html_elements.append(f'<h1 class="exam-title" style="{style_title}">{exam_title}</h1>')
-
-    # --- Model ID Box ---
-    mib_coords = layout_data.model_id_box
-    x_mib, y_mib = mib_coords.top_left
-    w_mib = mib_coords.bottom_right[0] - x_mib
-    h_mib = mib_coords.bottom_right[1] - y_mib
-    style_model_box = f"position: absolute; left: {x_mib}mm; top: {y_mib}mm; width: {w_mib}mm; height: {h_mib}mm;"
-    html_elements.append(f'<div class="model-id-box" style="{style_model_box}"></div>')
-    # Position the text separately
-    style_model_text = f"position: absolute; left: {x_mib}mm; top: {y_mib}mm; width: {w_mib}mm; height: {h_mib}mm;"
-    html_elements.append(f'<div class="model-id-text" style="{style_model_text}">{exam_model}</div>')
-    
+def _answer_sheet_header_elements(layout_data, exam_model: int, exam_title: str, exam_course: Optional[str],
+                                  exam_date: Optional[str], selected_lang: dict) -> List[str]:
+    """Title, model box and course/date line."""
+    elements = [
+        f'<h1 class="exam-title" style="{_abs_style(*layout_data.exam_title, layout_data.exam_title_width)}">{exam_title}</h1>',
+        f'<div class="model-id-box" style="{_box_style(layout_data.model_id_box)}"></div>',
+        # The model number is positioned separately, over the box
+        f'<div class="model-id-text" style="{_box_style(layout_data.model_id_box)}">{exam_model}</div>',
+    ]
     exam_info_parts = []
-    if exam_course: exam_info_parts.append(f"<span>{selected_lang['course']}: {exam_course}</span>")
-    if exam_date: exam_info_parts.append(f"<span>{selected_lang['date']}: {exam_date}</span>")
+    if exam_course:
+        exam_info_parts.append(f"<span>{selected_lang['course']}: {exam_course}</span>")
+    if exam_date:
+        exam_info_parts.append(f"<span>{selected_lang['date']}: {exam_date}</span>")
     exam_info_html = "\n".join(exam_info_parts)
-    style_info = f"position: absolute; left: {layout_data.exam_info[0]}mm; top: {layout_data.exam_info[1]}mm; width: {layout_data.exam_info_width}mm;"
-    html_elements.append(f'<div class="exam-info" style="{style_info}">{exam_info_html}</div>')
+    style_info = _abs_style(*layout_data.exam_info, layout_data.exam_info_width)
+    elements.append(f'<div class="exam-info" style="{style_info}">{exam_info_html}</div>')
+    return elements
 
-    # --- Student Info ---
-    style_name_label = f"position: absolute; left: {layout_data.student_name_label[0]}mm; top: {layout_data.student_name_label[1]}mm;"
-    html_elements.append(f'<div class="student-name-label" style="{style_name_label}"><b>{selected_lang["name"]}</b></div>')
-    
-    snb_coords = layout_data.student_name_box
-    x_snb, y_snb = snb_coords.top_left
-    w_snb = snb_coords.bottom_right[0] - x_snb
-    h_snb = snb_coords.bottom_right[1] - y_snb
-    style_name_box = f"position: absolute; left: {x_snb}mm; top: {y_snb}mm; width: {w_snb}mm; height: {h_snb}mm;"
-    html_elements.append(f'<div class="student-name-box" style="{style_name_box}"></div>')
 
-    style_id_label = f"position: absolute; left: {layout_data.student_id_label[0]}mm; top: {layout_data.student_id_label[1]}mm;"
-    html_elements.append(f'<div class="student-id-label" style="{style_id_label}"><b>{selected_lang["id"]}</b></div>')
-    
-    # Single ID box
-    id_box_coords = layout_data.student_id_box
-    x, y = id_box_coords.top_left
-    w = id_box_coords.bottom_right[0] - x
-    h = id_box_coords.bottom_right[1] - y
-    style = f"position: absolute; left: {x}mm; top: {y}mm; width: {w}mm; height: {h}mm;"
-    html_elements.append(f'<div class="id-box" style="{style}"></div>')
+def _student_box_elements(layout_data, selected_lang: dict) -> List[str]:
+    """Labelled name, ID and signature boxes."""
+    elements = []
+    for label_class, label_pos, label_key, box_class, box in (
+        ("student-name-label", layout_data.student_name_label, "name", "student-name-box", layout_data.student_name_box),
+        ("student-id-label", layout_data.student_id_label, "id", "id-box", layout_data.student_id_box),
+        ("student-signature-label", layout_data.student_signature_label, "signature",
+         "student-signature-box", layout_data.student_signature_box),
+    ):
+        elements.append(f'<div class="{label_class}" style="{_abs_style(*label_pos)}"><b>{selected_lang[label_key]}</b></div>')
+        elements.append(f'<div class="{box_class}" style="{_box_style(box)}"></div>')
+    return elements
 
-    # --- Signature ---
-    style_sig_label = f"position: absolute; left: {layout_data.student_signature_label[0]}mm; top: {layout_data.student_signature_label[1]}mm;"
-    html_elements.append(f'<div class="student-signature-label" style="{style_sig_label}"><b>{selected_lang["signature"]}</b></div>')
 
-    ssb_coords = layout_data.student_signature_box
-    x_ssb, y_ssb = ssb_coords.top_left
-    w_ssb = ssb_coords.bottom_right[0] - x_ssb
-    h_ssb = ssb_coords.bottom_right[1] - y_ssb
-    style_sig_box = f"position: absolute; left: {x_ssb}mm; top: {y_ssb}mm; width: {w_ssb}mm; height: {h_ssb}mm;"
-    html_elements.append(f'<div class="student-signature-box" style="{style_sig_box}"></div>')
-
-    if header_only:
-        all_elements_html = "\n".join(html_elements)
-        return f'<div class="first-page-header">\n{all_elements_html}\n</div>'
-
-    # --- Instructions ---
+def _instructions_element(layout_data, selected_lang: dict) -> str:
+    """Marking instructions with a correct and a crossed-out example box."""
     example_correct_html = '<div class="example-box correct"></div>'
     example_incorrect_html = '<div class="example-box incorrect"><div class="incorrect-line"></div></div>'
 
@@ -166,29 +98,55 @@ def _generate_answer_sheet_html(
         </ul>
     </div>
     """
-    style_instructions = f"position: absolute; left: {layout_data.instructions[0]}mm; top: {layout_data.instructions[1]}mm;"
-    html_elements.append(f'<div style="{style_instructions}">{instructions_html}</div>')
+    return f'<div style="{_abs_style(*layout_data.instructions)}">{instructions_html}</div>'
 
-    # --- Answer Grid Elements ---
-    for group_index, labels in layout_data.header_labels.items():
+
+def _bubble_grid_elements(layout_data) -> List[str]:
+    """Option letters above each column group, question numbers and the bubbles."""
+    elements = []
+    for labels in layout_data.header_labels.values():
         for i, (x, y) in labels.items():
-            label = chr(ord("A") + i)
-            style = (f"position: absolute; left: {x}mm; top: {y}mm; "
-                     f"width: {layout.HEADER_OPTION_LABEL_WIDTH}mm; height: {layout.HEADER_ROW_HEIGHT}mm;")
-            html_elements.append(f'<div class="header-option" style="{style}">{label}</div>')
+            style = _abs_style(x, y, layout.HEADER_OPTION_LABEL_WIDTH, layout.HEADER_ROW_HEIGHT)
+            elements.append(f'<div class="header-option" style="{style}">{chr(ord("A") + i)}</div>')
 
     for q_id, (x, y) in layout_data.question_numbers.items():
-        style = (f"position: absolute; left: {x}mm; top: {y}mm; "
-                 f"width: {layout.QUESTION_NUMBER_WIDTH}mm; height: {layout.ANSWER_ROW_HEIGHT}mm;")
-        html_elements.append(f'<div class="question-number" style="{style}">{q_id}</div>')
+        style = _abs_style(x, y, layout.QUESTION_NUMBER_WIDTH, layout.ANSWER_ROW_HEIGHT)
+        elements.append(f'<div class="question-number" style="{style}">{q_id}</div>')
 
-    for q_id, options in layout_data.answer_boxes.items():
-        for opt_idx, coords in options.items():
-            x, y = coords.top_left
-            style = (f"position: absolute; left: {x}mm; top: {y}mm; "
-                     f"width: {layout.OPTION_BOX_WIDTH}mm; height: {layout.OPTION_BOX_HEIGHT}mm;")
-            html_elements.append(f'<div class="option-box" style="{style}"></div>')
-            
+    for options in layout_data.answer_boxes.values():
+        for coords in options.values():
+            style = _abs_style(*coords.top_left, layout.OPTION_BOX_WIDTH, layout.OPTION_BOX_HEIGHT)
+            elements.append(f'<div class="option-box" style="{style}"></div>')
+    return elements
+
+
+def _generate_answer_sheet_html(
+    questions: List[PexamQuestion],
+    exam_model: int,
+    exam_title: str,
+    exam_course: Optional[str],
+    exam_date: Optional[str],
+    lang: str = "en",
+    header_only: bool = False,
+) -> str:
+    """Generates the pure HTML for the answer sheet with absolutely positioned elements.
+
+    With ``header_only`` only the title, model box and student fields are returned (no
+    instructions or answer grid), at the same coordinates as on the answer sheet, so they
+    can be placed at the top of the first question page and still be read by the corrector.
+    """
+    selected_lang = LANG_STRINGS.get(lang, LANG_STRINGS["en"])
+    layout_data = layout.get_answer_sheet_layout(questions)
+
+    html_elements = _answer_sheet_header_elements(layout_data, exam_model, exam_title, exam_course, exam_date, selected_lang)
+    html_elements += _student_box_elements(layout_data, selected_lang)
+
+    if header_only:
+        all_elements_html = "\n".join(html_elements)
+        return f'<div class="first-page-header">\n{all_elements_html}\n</div>'
+
+    html_elements.append(_instructions_element(layout_data, selected_lang))
+    html_elements += _bubble_grid_elements(layout_data)
     all_elements_html = "\n".join(html_elements)
 
     return f"""
@@ -237,16 +195,6 @@ def _generate_questions_markdown(
     show_points: Print each question's points (e.g. ``[1.5 pt]``) right after its number.
     """
     md_parts = []
-    # Configure markdown extensions
-    extensions = [
-        'pymdownx.arithmatex',
-        'pymdownx.inlinehilite',
-        'fenced_code',
-        'codehilite'
-    ]
-    extension_configs = {
-        'pymdownx.arithmatex': {'generic': True}
-    }
     for q in questions:
         question_classes = ["question-wrapper"]
         if q.is_open_answer:
@@ -254,9 +202,8 @@ def _generate_questions_markdown(
         question_style = f' style="font-size: {q.font_size};"' if q.font_size else ""
         md_parts.append(f'\n<div class="{" ".join(question_classes)}" data-question-id="{q.id}"{question_style}>\n')
 
-        # Convert question text to HTML. Single newlines become <br> (nl2br), while blank lines
-        # keep separate blocks, so display math ($$...$$ in its own paragraph) is recognised.
-        question_text_html = markdown.markdown(q.text, extensions=extensions + ['nl2br'], extension_configs=extension_configs).strip()
+        # Convert question text to HTML. Single newlines become <br> (nl2br), blank lines separate paragraphs.
+        question_text_html = _render_markdown(q.text, nl2br=True)
         number_html = f"<b>{q.id}.</b> "
         if show_points:
             number_html += f'<span class="question-points">{_format_points(q.points, lang)}</span> '
@@ -267,22 +214,9 @@ def _generate_questions_markdown(
         else:
             question_text_html = number_html + question_text_html
         
+        question_text_html = _limit_image_size(question_text_html, q.max_image_width, q.max_image_height)
         md_parts.append(f'<div class="question-text">{question_text_html}</div>\n')
         
-        if q.image_source:
-            # Convert the path to a file URI to be safe for HTML rendering
-            src_path = Path(q.image_source)
-            if src_path.exists():
-                src = src_path.as_uri()
-                style_parts = []
-                if q.max_image_width:
-                    style_parts.append(f"max-width: {q.max_image_width};")
-                if q.max_image_height:
-                    style_parts.append(f"max-height: {q.max_image_height};")
-                
-                style_attr = f'style="{" ".join(style_parts)}"' if style_parts else ""
-                md_parts.append(f'<img src="{src}" alt="Image for question {q.id}" {style_attr}>\n')
-
         if q.is_open_answer:
             height_style = f"min-height: {max(1, q.answer_area.lines) * 7 + 6}mm;"
             if q.answer_area.height_mm is not None:
@@ -303,7 +237,7 @@ def _generate_questions_markdown(
             for i, option in enumerate(q.options):
                 option_label = chr(ord('A') + i)
                 # Convert option text to HTML, ensuring it's a single paragraph block
-                option_text_html = markdown.markdown(option.text.replace('\n', ' <br> '), extensions=extensions, extension_configs=extension_configs).strip()
+                option_text_html = _render_markdown(option.text.replace('\n', ' <br> '))
                 if option_text_html.startswith("<p>"):
                     option_text_html = option_text_html[3:-4]
 
@@ -313,180 +247,6 @@ def _generate_questions_markdown(
         md_parts.append('</div>\n')
 
     return "\n".join(md_parts)
-
-
-PX_PER_MM_CSS = 96 / 25.4
-PRINT_CONTENT_WIDTH_MM = 180  # A4 width (210mm) minus 15mm margins
-PRINT_CONTENT_HEIGHT_MM = 267  # A4 height (297mm) minus 15mm margins
-
-
-def _wrap_pages_with_header_footer(page, header_text: str, footer_prefix: str) -> int:
-    """Wraps each page container in an A4 sheet (15mm margins) with its own header and footer."""
-    return page.evaluate(
-        """([headerText, footerPrefix]) => {
-            const style = document.createElement('style');
-            style.textContent = `
-                @page { size: A4; margin: 0; }
-                body { margin: 0; }
-                .pexams-sheet { position: relative; width: 210mm; height: 297mm; padding: 15mm;
-                                box-sizing: border-box; overflow: hidden; break-after: page; }
-                .pexams-sheet.last { break-after: auto; }
-                .pexams-sheet > .page-container { break-after: auto !important; page-break-after: auto !important; }
-                .pexams-running { position: absolute; left: 15mm; right: 15mm; text-align: center;
-                                  font-size: 9px; line-height: 1.2; color: #888; white-space: nowrap;
-                                  overflow: hidden; text-overflow: ellipsis; }`;
-            document.head.appendChild(style);
-            const containers = Array.from(document.body.children).filter((el) => el.classList.contains('page-container'));
-            containers.forEach((container, index) => {
-                const sheet = document.createElement('div');
-                sheet.className = 'pexams-sheet' + (index === containers.length - 1 ? ' last' : '');
-                container.parentNode.insertBefore(sheet, container);
-                sheet.appendChild(container);
-                for (const [edge, text] of [['top', headerText], ['bottom', `${footerPrefix} - Page ${index + 1} of ${containers.length}`]]) {
-                    const running = document.createElement('div');
-                    running.className = 'pexams-running';
-                    running.style[edge] = '6mm';
-                    running.textContent = text;
-                    sheet.appendChild(running);
-                }
-            });
-            return containers.length;
-        }""",
-        [header_text, footer_prefix],
-    )
-
-
-def _keep_questions_within_pages(page, fill_answer_space: bool = False) -> int:
-    """Splits the questions into one fixed-height container per printed page.
-
-    A single tall container is fragmented by Chromium's print engine in ways that
-    getBoundingClientRect cannot report, so boxes ended up split across pages and the
-    open-answer coordinates drifted. Instead, questions are distributed over page-sized
-    containers (like the answer sheet): no question or open-answer box crosses a page,
-    every page carries its own four fiducial markers, and measured coordinates are the
-    printed ones. Each container gets the height left on its page, so with several columns
-    a question that does not fit shows up below the page or in an extra column to the
-    right, and is moved to the next page.
-
-    With ``fill_answer_space`` the free space left at the bottom of each page is shared
-    equally among that page's open-answer boxes (except those with an explicit height).
-    Returns the number of question pages.
-    """
-    return page.evaluate(
-        """([pageHeightMm, bottomReserveMm, fillAnswerSpace, fillMarginMm]) => {
-            const mm = 96 / 25.4;
-            const limit = (pageHeightMm - bottomReserveMm) * mm;
-            const original = document.querySelector('.questions-page');
-            if (!original) return 0;
-            const originalContent = original.querySelector('.questions-container');
-            const items = Array.from(originalContent.children);
-            // The student header and its spacer (exams without answer sheet) belong to the first page only.
-            const firstPageHeader = original.querySelector('.first-page-header');
-            const firstPageSpacer = original.querySelector('.first-page-header-spacer');
-            if (firstPageHeader) firstPageHeader.remove();
-            if (firstPageSpacer) firstPageSpacer.remove();
-            const template = original.cloneNode(true);
-            template.querySelector('.questions-container').innerHTML = '';
-            const pages = [];
-            const usableBottom = (pageEl) => pageEl.getBoundingClientRect().top + limit;
-            const overflows = (pageEl, container) => {
-                const bottom = usableBottom(pageEl) + 1;
-                const right = container.getBoundingClientRect().right + 1;
-                return Array.from(container.children).some((child) => {
-                    const rect = child.getBoundingClientRect();
-                    return rect.bottom > bottom || rect.right > right;
-                });
-            };
-            const newPage = () => {
-                const pageEl = template.cloneNode(true);
-                pageEl.style.height = pageHeightMm + 'mm';
-                pageEl.style.minHeight = '0';
-                pageEl.style.overflow = 'hidden';
-                pageEl.style.pageBreakAfter = 'always';
-                original.parentNode.insertBefore(pageEl, original);
-                pages.push(pageEl);
-                const container = pageEl.querySelector('.questions-container');
-                if (pages.length === 1 && firstPageSpacer) pageEl.insertBefore(firstPageSpacer, container);
-                const height = usableBottom(pageEl) - container.getBoundingClientRect().top;
-                container.style.height = Math.max(0, height) + 'px';
-                return container;
-            };
-            let current = newPage();
-            if (firstPageHeader) pages[0].appendChild(firstPageHeader);
-            for (const item of items) {
-                current.appendChild(item);
-                // Check every item: adding one can rebalance the columns of the others.
-                if (current.children.length > 1 && overflows(pages[pages.length - 1], current)) {
-                    current = newPage();
-                    current.appendChild(item);
-                }
-            }
-            original.remove();
-            pages[pages.length - 1].style.pageBreakAfter = 'auto';
-
-            if (fillAnswerSpace) {
-                for (const pageEl of pages) {
-                    const container = pageEl.querySelector('.questions-container');
-                    const boxes = Array.from(container.querySelectorAll('.open-answer-box:not([data-fixed-height])'));
-                    if (!boxes.length) continue;
-                    const contentBottom = Math.max(...Array.from(container.children).map((c) => c.getBoundingClientRect().bottom));
-                    const free = usableBottom(pageEl) - fillMarginMm * mm - contentBottom;
-                    if (free <= 0) continue;
-                    const heights = boxes.map((box) => box.getBoundingClientRect().height);
-                    const previous = boxes.map((box) => box.style.minHeight);
-                    boxes.forEach((box, i) => { box.style.minHeight = (heights[i] + free / boxes.length) + 'px'; });
-                    if (overflows(pageEl, container)) boxes.forEach((box, i) => { box.style.minHeight = previous[i]; });
-                }
-            }
-            return pages.length;
-        }""",
-        [PRINT_CONTENT_HEIGHT_MM, 14, fill_answer_space, 2],
-    )
-
-
-def _extract_open_answer_area_metadata(page, model_questions: List[PexamQuestion], exam_model: int) -> List[dict]:
-    """Read rendered open-answer box positions from the browser page."""
-    question_lookup = {str(q.id): q for q in model_questions}
-    raw_boxes = page.evaluate(
-        """() => {
-            const pxPerMm = 96 / 25.4;
-            const containers = Array.from(document.querySelectorAll('.page-container'));
-            return Array.from(document.querySelectorAll('.open-answer-box')).map((box) => {
-                const container = containers.find((candidate) => candidate.contains(box));
-                const boxRect = box.getBoundingClientRect();
-                const containerRect = container.getBoundingClientRect();
-                return {
-                    question_id: box.dataset.questionId,
-                    page_index: containers.indexOf(container) + 1,
-                    x_mm: (boxRect.left - containerRect.left) / pxPerMm,
-                    y_mm: (boxRect.top - containerRect.top) / pxPerMm,
-                    width_mm: boxRect.width / pxPerMm,
-                    height_mm: boxRect.height / pxPerMm,
-                    lines: Number(box.dataset.lines || 0),
-                };
-            });
-        }"""
-    )
-
-    metadata = []
-    for box in raw_boxes:
-        question = question_lookup.get(str(box["question_id"]))
-        metadata.append({
-            "model_id": str(exam_model),
-            "question_id": box["question_id"],
-            "original_id": str(question.original_id) if question and question.original_id is not None else None,
-            # y is measured from the top of a (possibly multi-page) container: convert it to
-            # the printed page and the offset within that page.
-            "page_index": int(box["page_index"]) + int(float(box["y_mm"]) // PRINT_CONTENT_HEIGHT_MM),
-            "x_mm": round(float(box["x_mm"]), 3),
-            "y_mm": round(float(box["y_mm"]) % PRINT_CONTENT_HEIGHT_MM, 3),
-            "width_mm": round(float(box["width_mm"]), 3),
-            "height_mm": round(float(box["height_mm"]), 3),
-            "lines": float(box["lines"]),
-            "points": float(question.points) if question else None,
-        })
-    return metadata
-
 
 
 def _create_mass_exam_pdf(model_pdfs: List[str], total_students: int, output_dir: str, extra_model_templates: int = 0):
@@ -527,10 +287,197 @@ def _create_mass_exam_pdf(model_pdfs: List[str], total_students: int, output_dir
     writer.write(output_path)
     logging.info(f"Saved mass exam PDF to {output_path}")
 
+
+def _load_questions(questions: Union[List[PexamQuestion], str]) -> Optional[List[PexamQuestion]]:
+    """The questions themselves, or those of a questions JSON file (None if it cannot be read)."""
+    if not isinstance(questions, str):
+        return questions
+    if not os.path.exists(questions):
+        logging.error(f"Questions JSON file not found at: {questions}")
+        return None
+    logging.info(f"Loading questions from: {questions}")
+    try:
+        return PexamExam.model_validate_json(Path(questions).read_text(encoding="utf-8")).questions
+    except Exception as e:
+        logging.error(f"Failed to parse questions JSON file: {e}")
+        return None
+
+
+def _check_and_scale_mc_points(questions: List[PexamQuestion], mc_total_points: Optional[float]) -> None:
+    """Check the number of multiple-choice questions and, with ``mc_total_points``, share those
+    points equally among them (questions with their own points are not allowed then)."""
+    mc_questions = [q for q in questions if q.is_multiple_choice]
+    if len(mc_questions) > layout.MAX_QUESTIONS:
+        logging.error(f"Too many multiple-choice questions ({len(mc_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
+        raise ValueError(f"Too many multiple-choice questions ({len(mc_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
+    if mc_total_points is None:
+        return
+    if mc_total_points <= 0:
+        raise ValueError("--mc-total-points must be greater than 0.")
+    explicit_points = [q for q in mc_questions if q.points != 1.0]
+    if explicit_points:
+        explicit_ids = ", ".join(str(q.original_id or q.id) for q in explicit_points)
+        raise ValueError(
+            "--mc-total-points cannot be combined with per-question MC points. "
+            f"Questions with explicit non-default points: {explicit_ids}"
+        )
+    if mc_questions:
+        points_per_question = mc_total_points / len(mc_questions)
+        for q in mc_questions:
+            q.points = points_per_question
+
+
+def _fakes_per_model(generate_fakes: int, num_models: int) -> List[int]:
+    """Number of simulated scans of each model, spread as evenly as possible."""
+    if generate_fakes <= 0:
+        return []
+    if num_models <= 0:
+        logging.warning("generate_fakes is greater than 0 but num_models is 0. No fakes will be generated.")
+        return []
+    base, remainder = divmod(generate_fakes, num_models)
+    return [base + 1 if i < remainder else base for i in range(num_models)]
+
+
+def _custom_header_html(custom_header: Optional[Union[str, Path]], markdown_asset_base_dir: Optional[str]) -> str:
+    """The custom header (Markdown text or a .md file) as HTML, with its relative media resolved."""
+    if not custom_header:
+        return ""
+    is_file = str(custom_header).strip().lower().endswith(".md") and os.path.exists(str(custom_header))
+    header_content = custom_header
+    if is_file:
+        logging.info(f"Loading custom header from file: {custom_header}")
+        with open(custom_header, 'r', encoding='utf-8') as f:
+            header_content = f.read()
+    header_html = f'<div class="custom-header">{_render_markdown(str(header_content))}</div>'
+    resolve_base = os.path.dirname(os.path.abspath(str(custom_header))) if is_file else markdown_asset_base_dir
+    return _resolve_relative_media_uris(header_html, resolve_base) if resolve_base else header_html
+
+
+def _shuffle_model_options(model_questions: List[PexamQuestion]) -> None:
+    """Shuffle the options of each multiple-choice question (in place) and keep its correct one marked."""
+    for q in model_questions:
+        if q.is_multiple_choice and q.options and q.correct_answer_index is not None:
+            original_correct_option = q.options[q.correct_answer_index]
+            utils.shuffle_options_for_question(q)
+            try:
+                new_correct_index = q.options.index(original_correct_option)
+                for opt_idx, option in enumerate(q.options):
+                    option.is_correct = (opt_idx == new_correct_index)
+            except ValueError:
+                logging.error(f"Could not find the original correct answer for question {q.id} after shuffling. This should not happen.")
+
+
+def _exam_html(model_questions: List[PexamQuestion], model_number: int, exam_title: str, exam_course: Optional[str],
+               exam_date: Optional[str], lang: str, css_content: str, font_size: str, column_class: str,
+               custom_header_html: str, print_points: bool, markdown_asset_base_dir: Optional[str]) -> str:
+    """The complete HTML document of one exam model."""
+    model_mc_questions = [q for q in model_questions if q.is_multiple_choice]
+    # Without multiple-choice questions there is nothing to mark on an answer sheet: the
+    # student header goes at the top of the first question page instead, saving the answer
+    # sheet and the blank page after it. It keeps the answer-sheet coordinates, so the
+    # corrector reads the model, ID and name from the first page as usual.
+    header_on_first_page = not model_mc_questions
+    answer_sheet_html = _generate_answer_sheet_html(
+        model_mc_questions, model_number, exam_title=exam_title, exam_course=exam_course, exam_date=exam_date,
+        lang=lang, header_only=header_on_first_page,
+    )
+    if header_on_first_page:
+        first_page_header_html = answer_sheet_html
+        # Push the questions (all columns) below the student boxes; the container adds its 11mm top padding.
+        header_bottom_mm = layout.STUDENT_NAME_BOX_TL[1] + layout.STUDENT_NAME_BOX_HEIGHT
+        spacer_html = f'<div class="first-page-header-spacer" style="height: {header_bottom_mm + 5 - 11}mm;"></div>'
+        pages_before_questions_html = ""
+    else:
+        first_page_header_html = ""
+        spacer_html = ""
+        pages_before_questions_html = f"""{answer_sheet_html}
+    <div class="page-container" style="page-break-after: always;"></div>"""
+    # Already HTML: a second Markdown pass could only alter code blocks and math.
+    questions_html = _generate_questions_markdown(model_questions, show_points=print_points, lang=lang)
+    if markdown_asset_base_dir:
+        questions_html = _resolve_relative_media_uris(questions_html, markdown_asset_base_dir)
+
+    head = head_assets(fonts_url=EXAM_FONTS_URL, mathjax_config=MATHJAX_ARITHMATEX_CONFIG)
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{exam_title} - Model {model_number}</title>
+    {head}
+    <style>
+        {css_content}
+    </style>
+    <style>
+        body {{ font-size: {font_size}; }}
+    </style>
+</head>
+<body>
+    {pages_before_questions_html}
+    <div class="page-container questions-page">
+        <div class="fiducial top-left"></div>
+        <div class="fiducial top-right"></div>
+        <div class="fiducial bottom-left"></div>
+        <div class="fiducial bottom-right"></div>
+        {first_page_header_html}
+        {spacer_html}
+        <div class="questions-container {column_class}">
+        {custom_header_html}
+        {questions_html}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+def _render_exam_pdf(html_path: str, pdf_path: str, model_questions: List[PexamQuestion], model_number: int,
+                     exam_title: str, exam_date: Optional[str], fill_answer_space: bool) -> List[dict]:
+    """Print one exam model to PDF and return the measured positions of its open-answer boxes."""
+    def lay_out(page):
+        # Lay the page out exactly as it will be printed (A4 content width, print media),
+        # keep questions and answer boxes from crossing page breaks, and only then
+        # measure the open-answer areas so their coordinates match the printed pages.
+        page.emulate_media(media="print")
+        page.set_viewport_size({"width": round(PRINT_CONTENT_WIDTH_MM * PX_PER_MM_CSS), "height": 1200})
+        n_pages = keep_questions_within_pages(page, fill_answer_space=fill_answer_space)
+        logging.info(f"Questions laid out on {n_pages} page(s) with per-page fiducial markers.")
+        areas = extract_open_answer_area_metadata(page, model_questions, model_number)
+        # Every printed page is now its own container: draw header and footer inside
+        # each A4 sheet so they use the exam font. Chromium's header/footer templates
+        # cannot load web or embedded fonts and fall back to Times.
+        header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
+        wrap_pages_with_header_footer(page, header_text, f"Model {model_number}")
+        return areas
+
+    return html_to_pdf(html_path, pdf_path, before_pdf=lay_out, prefer_css_page_size=True,
+                       margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
+
+
+def _generate_test_scans(pdf_path: str, model_questions: List[PexamQuestion], output_dir: str, model_number: int,
+                         generate_references: bool, fakes_per_model: List[int]) -> None:
+    from pexams.simulated_scans import generate_reference_scan, generate_simulated_scan
+
+    if generate_references:
+        logging.info(f"Generating reference scan for model {model_number}")
+        generate_reference_scan(pdf_path, model_questions, output_dir, model_number)
+    if not fakes_per_model:
+        return
+    if model_number > len(fakes_per_model):
+        logging.warning(f"Skipping fake generation for model {model_number} due to index out of range. "
+                        "This can happen if num_models is inconsistent.")
+        return
+    num_fakes = fakes_per_model[model_number - 1]
+    if num_fakes > 0:
+        logging.info(f"Test mode enabled: Generating {num_fakes} simulated scan(s) for model {model_number}")
+        for fake_idx in range(1, num_fakes + 1):
+            generate_simulated_scan(pdf_path, model_questions, output_dir, f"{model_number}_{fake_idx}")
+
+
 def generate_exams(
-    questions: Union[List[PexamQuestion], str], 
-    output_dir: str, 
-    num_models: int = 4, 
+    questions: Union[List[PexamQuestion], str],
+    output_dir: str,
+    num_models: int = 4,
     exam_title: str = "Final Exam",
     exam_course: Optional[str] = None,
     exam_date: Optional[str] = None,
@@ -564,257 +511,63 @@ def generate_exams(
     open-answer questions or questions of different value. The printed value is the
     question's own ``points`` (after ``mc_total_points``), not rescaled to any total.
     """
-    logging.info(f"Starting pexams PDF generation.")
-    
-    if isinstance(questions, str):
-        if not os.path.exists(questions):
-            logging.error(f"Questions JSON file not found at: {questions}")
-            return
-        logging.info(f"Loading questions from: {questions}")
-        try:
-            loaded_exam = PexamExam.model_validate_json(Path(questions).read_text(encoding="utf-8"))
-        except Exception as e:
-            logging.error(f"Failed to parse questions JSON file: {e}")
-            return
-        questions_list = loaded_exam.questions
-    else:
-        questions_list = questions
-
-    # Check max questions
-    multiple_choice_questions = [q for q in questions_list if q.is_multiple_choice]
-    if len(multiple_choice_questions) > layout.MAX_QUESTIONS:
-        logging.error(f"Too many multiple-choice questions ({len(multiple_choice_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
-        raise ValueError(f"Too many multiple-choice questions ({len(multiple_choice_questions)}). Max allowed is {layout.MAX_QUESTIONS}.")
-
-    if mc_total_points is not None:
-        if mc_total_points <= 0:
-            raise ValueError("--mc-total-points must be greater than 0.")
-        explicit_points = [q for q in multiple_choice_questions if q.points != 1.0]
-        if explicit_points:
-            explicit_ids = ", ".join(str(q.original_id or q.id) for q in explicit_points)
-            raise ValueError(
-                "--mc-total-points cannot be combined with per-question MC points. "
-                f"Questions with explicit non-default points: {explicit_ids}"
-            )
-        if multiple_choice_questions:
-            points_per_question = mc_total_points / len(multiple_choice_questions)
-            for q in multiple_choice_questions:
-                q.points = points_per_question
-
+    logging.info("Starting pexams PDF generation.")
+    questions_list = _load_questions(questions)
+    if questions_list is None:
+        return
+    _check_and_scale_mc_points(questions_list, mc_total_points)
     print_points = _should_show_points(questions_list, show_points)
 
     logging.info(f"Loaded {len(questions_list)} questions.")
     logging.info(f"Exams will be output to: {output_dir}")
-
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
         logging.info(f"Created output directory: {output_dir}")
-        
-    fakes_per_model = []
-    if generate_fakes > 0:
-        if num_models > 0:
-            base_fakes = generate_fakes // num_models
-            rem_fakes = generate_fakes % num_models
-            fakes_per_model = [base_fakes + 1 if i < rem_fakes else base_fakes for i in range(num_models)]
-        else:
-            logging.warning("generate_fakes is greater than 0 but num_models is 0. No fakes will be generated.")
+    fakes_per_model = _fakes_per_model(generate_fakes, num_models)
 
     css_path = os.path.join(os.path.dirname(__file__), "pexams.css")
     if not os.path.exists(css_path):
         logging.error(f"CSS theme not found at {css_path}. Cannot generate exams.")
         return
-        
     with open(css_path, "r", encoding="utf-8") as f:
         css_content = f.read()
-
-    column_classes = {1: "", 2: "two-columns", 3: "three-columns"}
-    column_class = column_classes.get(columns, "")
-
-    # Process custom header
-    custom_header_html = ""
-    if custom_header:
-        header_content = custom_header
-        if str(custom_header).strip().lower().endswith('.md') and os.path.exists(str(custom_header)):
-            logging.info(f"Loading custom header from file: {custom_header}")
-            with open(custom_header, 'r', encoding='utf-8') as f:
-                header_content = f.read()
-        
-        extensions = [
-            'pymdownx.arithmatex',
-            'pymdownx.inlinehilite',
-            'fenced_code',
-            'codehilite'
-        ]
-        extension_configs = {
-            'pymdownx.arithmatex': {'generic': True}
-        }
-        custom_header_html = markdown.markdown(str(header_content), extensions=extensions, extension_configs=extension_configs)
-        custom_header_html = f'<div class="custom-header">{custom_header_html}</div>'
-        header_resolve_base = None
-        if str(custom_header).strip().lower().endswith(".md") and os.path.exists(str(custom_header)):
-            header_resolve_base = os.path.dirname(os.path.abspath(str(custom_header)))
-        elif markdown_asset_base_dir:
-            header_resolve_base = markdown_asset_base_dir
-        if header_resolve_base:
-            custom_header_html = _resolve_relative_media_uris(custom_header_html, header_resolve_base)
+    custom_header_html = _custom_header_html(custom_header, markdown_asset_base_dir)
 
     # We work on a copy to avoid mutating the original list if it's reused
     questions_shuffled = list(questions_list)
     utils.shuffle_questions_list(questions_shuffled)
-    
+
     generated_pdfs = []
     open_answer_areas = []
-
     for i in range(1, num_models + 1):
-        # Deepcopy to avoid modifying the base shuffled list
+        # Each model shuffles the options of its own copy of the (already shuffled) questions.
         model_questions = deepcopy(questions_shuffled)
-        
-        # --- Shuffle options for each multiple-choice question to create unique models ---
-        for q in model_questions:
-            if q.is_multiple_choice and q.options and q.correct_answer_index is not None:
-                # Store the original correct option before shuffling
-                original_correct_option = q.options[q.correct_answer_index]
-                
-                # Shuffle the options using the global util function
-                utils.shuffle_options_for_question(q)
-                
-                # Find the new index of the correct option and update the is_correct flag
-                try:
-                    new_correct_index = q.options.index(original_correct_option)
-                    for opt_idx, option in enumerate(q.options):
-                        option.is_correct = (opt_idx == new_correct_index)
-                except ValueError:
-                    logging.error(f"Could not find the original correct answer for question {q.id} after shuffling. This should not happen.")
-                    # Handle error case if necessary, though it's unlikely.
-                    
-        # Save the questions for this model to a JSON file
-        model_exam = PexamExam(questions=model_questions)
+        _shuffle_model_options(model_questions)
+        for q in model_questions:  # the questions JSON is read from other folders (grading, reports)
+            q.text = absolute_markdown_images(q.text, markdown_asset_base_dir)
+            q.explanation = absolute_markdown_images(q.explanation, markdown_asset_base_dir)
+            for option in q.options:
+                option.text = absolute_markdown_images(option.text, markdown_asset_base_dir)
+
         questions_json_path = os.path.join(output_dir, f"exam_model_{i}_questions.json")
         with open(questions_json_path, "w", encoding="utf-8") as f:
-            f.write(model_exam.model_dump_json(indent=4))
+            f.write(PexamExam(questions=model_questions).model_dump_json(indent=4))
         logging.info(f"Saved questions for model {i} to: {questions_json_path}")
 
-        model_mc_questions = [q for q in model_questions if q.is_multiple_choice]
-        # Without multiple-choice questions there is nothing to mark on an answer sheet: the
-        # student header goes at the top of the first question page instead, saving the answer
-        # sheet and the blank page after it. It keeps the answer-sheet coordinates, so the
-        # corrector reads the model, ID and name from the first page as usual.
-        header_on_first_page = not model_mc_questions
-        answer_sheet_html = _generate_answer_sheet_html(
-            model_mc_questions,
-            i,
-            exam_title=exam_title,
-            exam_course=exam_course,
-            exam_date=exam_date,
-            lang=lang,
-            header_only=header_on_first_page,
-        )
-        if header_on_first_page:
-            first_page_header_html = answer_sheet_html
-            # Push the questions (all columns) below the student boxes; the container adds its 11mm top padding.
-            header_bottom_mm = layout.STUDENT_NAME_BOX_TL[1] + layout.STUDENT_NAME_BOX_HEIGHT
-            spacer_html = f'<div class="first-page-header-spacer" style="height: {header_bottom_mm + 5 - 11}mm;"></div>'
-            pages_before_questions_html = ""
-        else:
-            first_page_header_html = ""
-            spacer_html = ""
-            pages_before_questions_html = f"""{answer_sheet_html}
-    <div class="page-container" style="page-break-after: always;"></div>"""
-        questions_md = _generate_questions_markdown(model_questions, show_points=print_points, lang=lang)
-        questions_html = markdown.markdown(questions_md)
-        if markdown_asset_base_dir:
-            questions_html = _resolve_relative_media_uris(questions_html, markdown_asset_base_dir)
-
-        final_html_content = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>{exam_title} - Model {i}</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Roboto:ital,wght@0,300;0,400;0,500;0,700&display=swap">
-    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-    <style>
-        {css_content}
-    </style>
-    <style>
-        body {{ font-size: {font_size}; }}
-    </style>
-</head>
-<body>
-    {pages_before_questions_html}
-    <div class="page-container questions-page">
-        <div class="fiducial top-left"></div>
-        <div class="fiducial top-right"></div>
-        <div class="fiducial bottom-left"></div>
-        <div class="fiducial bottom-right"></div>
-        {first_page_header_html}
-        {spacer_html}
-        <div class="questions-container {column_class}">
-        {custom_header_html}
-        {questions_html}
-        </div>
-    </div>
-</body>
-</html>
-"""
         html_filepath = os.path.join(output_dir, f"exam_model_{i}.html")
         pdf_filepath = os.path.join(output_dir, f"exam_model_{i}.pdf")
-
         with open(html_filepath, "w", encoding="utf-8") as f:
-            f.write(final_html_content)
+            f.write(_exam_html(model_questions, i, exam_title, exam_course, exam_date, lang, css_content, font_size,
+                               COLUMN_CLASSES.get(columns, ""), custom_header_html, print_points,
+                               markdown_asset_base_dir))
         logging.info(f"Generated HTML for exam model {i}: {html_filepath}")
-        
+
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page()
-                # Use file:// protocol to load the local HTML file
-                abs_html_path = os.path.abspath(html_filepath).replace('\\', '/')
-                page.goto(f"file:///{abs_html_path}", wait_until="networkidle")
-                
-                # Wait for MathJax to finish rendering.
-                # typesetPromise() will not resolve until all math is rendered.
-                page.evaluate("MathJax.typesetPromise()")
-
-                # A definitive wait to ensure all rendering is complete.
-                page.wait_for_timeout(1000)
-                # Lay the page out exactly as it will be printed (A4 content width, print media),
-                # keep questions and answer boxes from crossing page breaks, and only then
-                # measure the open-answer areas so their coordinates match the printed pages.
-                page.emulate_media(media="print")
-                page.set_viewport_size({"width": round(PRINT_CONTENT_WIDTH_MM * PX_PER_MM_CSS), "height": 1200})
-                n_pages = _keep_questions_within_pages(page, fill_answer_space=fill_answer_space)
-                logging.info(f"Questions laid out on {n_pages} page(s) with per-page fiducial markers.")
-                open_answer_areas.extend(_extract_open_answer_area_metadata(page, model_questions, i))
-
-                header_text = f"{exam_title} - {exam_date}" if exam_date else exam_title
-                footer_prefix = f"Model {i}"
-
-                # Every printed page is now its own container: draw header and footer inside
-                # each A4 sheet so they use the exam font. Chromium's header/footer templates
-                # cannot load web or embedded fonts and fall back to Times.
-                _wrap_pages_with_header_footer(page, header_text, footer_prefix)
-                page.pdf(path=pdf_filepath, format='A4', print_background=True, prefer_css_page_size=True,
-                         margin={'top': '0', 'bottom': '0', 'left': '0', 'right': '0'})
-                browser.close()
+            open_answer_areas.extend(_render_exam_pdf(html_filepath, pdf_filepath, model_questions, i, exam_title,
+                                                      exam_date, fill_answer_space))
             logging.info(f"Successfully generated PDF for model {i}: {pdf_filepath}")
             generated_pdfs.append(pdf_filepath)
-
-            if generate_references:
-                logging.info(f"Generating reference scan for model {i}")
-                _generate_reference_scan(pdf_filepath, model_questions, output_dir, i)
-
-            if generate_fakes > 0 and fakes_per_model:
-                if i <= len(fakes_per_model):
-                    num_fakes_for_this_model = fakes_per_model[i-1]
-                    if num_fakes_for_this_model > 0:
-                        logging.info(f"Test mode enabled: Generating {num_fakes_for_this_model} simulated scan(s) for model {i}")
-                        for fake_idx in range(1, num_fakes_for_this_model + 1):
-                            _generate_simulated_scan(pdf_filepath, model_questions, output_dir, f"{i}_{fake_idx}")
-                else:
-                    logging.warning(f"Skipping fake generation for model {i} due to index out of range. This can happen if num_models is inconsistent.")
-
+            _generate_test_scans(pdf_filepath, model_questions, output_dir, i, generate_references, fakes_per_model)
         except PlaywrightError as e:
             logging.error(f"Playwright failed to generate PDF for model {i}: {e}")
             logging.error("Have you installed the browser binaries? Try running 'playwright install'")
@@ -835,210 +588,3 @@ def generate_exams(
 
     if total_students > 0 and generated_pdfs:
         _create_mass_exam_pdf(generated_pdfs, total_students, output_dir, extra_model_templates)
-
-def _find_fiducial_markers_for_sim(image):
-    # This is a simplified copy from correct_exams.py for test generation
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 97, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    page_height, page_width = image.shape[:2]
-    
-    corner_regions = {
-        "tl": (0, page_width * 0.2, 0, page_height * 0.2),
-        "tr": (page_width * 0.8, page_width, 0, page_height * 0.2),
-        "bl": (0, page_width * 0.2, page_height * 0.8, page_height),
-        "br": (page_width * 0.8, page_width, page_height * 0.8, page_height),
-    }
-    
-    corner_candidates = {"tl": [], "tr": [], "bl": [], "br": []}
-    ref_dim = 8 * (300 / 25.4)
-    min_area, max_area = (ref_dim ** 2) * 0.2, (ref_dim ** 2) * 1.5
-
-    for c in contours:
-        area = cv2.contourArea(c)
-        if not (min_area < area < max_area): continue
-        x, y, w, h = cv2.boundingRect(c)
-        aspect_ratio = w / float(h) if h > 0 else 0
-        if not (0.4 < aspect_ratio < 2.5): continue
-        hull = cv2.convexHull(c)
-        if hull.shape[0] < 3: continue
-        hull_area = cv2.contourArea(hull)
-        solidity = area / float(hull_area) if hull_area > 0 else 0
-        if solidity > 0.6: continue
-        M = cv2.moments(c)
-        if M["m00"] == 0: continue
-        cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-
-        for name, (x_min, x_max, y_min, y_max) in corner_regions.items():
-            if (x_min < cx < x_max) and (y_min < cy < y_max):
-                corner_candidates[name].append((cx, cy))
-                break
-    
-    final_corners = {}
-    page_corners = {"tl": (0, 0), "tr": (page_width, 0), "bl": (0, page_height), "br": (page_width, page_height)}
-    
-    for name, candidates in corner_candidates.items():
-        if not candidates: return None
-        px, py = page_corners[name]
-        final_corners[name] = min(candidates, key=lambda p: np.sqrt((p[0] - px)**2 + (p[1] - py)**2))
-
-    tl, tr, bl, br = final_corners["tl"], final_corners["tr"], final_corners["bl"], final_corners["br"]
-    if not all([tl, tr, bl, br]): return None
-    return np.array([tl, tr, br, bl], dtype="float32")
-
-
-def _generate_reference_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: int):
-    """
-    Takes the first page of a PDF, converts it to an image, and adds the correct answers
-    to generate a reference scan.
-    """
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        logging.error("pdf2image is required for reference generation. Please install it.")
-        return
-
-    ref_output_dir = os.path.join(output_dir, "reference_scans")
-    os.makedirs(ref_output_dir, exist_ok=True)
-
-    try:
-        images = convert_from_path(original_pdf_path, first_page=1, last_page=1, dpi=300)
-        if not images: return
-        img_cv = cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
-    except Exception as e:
-        logging.error(f"Failed to convert PDF to image for reference scan: {e}")
-        return
-
-    marker_corners = _find_fiducial_markers_for_sim(img_cv)
-    if marker_corners is None:
-        logging.error("Could not find fiducial markers in the generated PDF for reference scan. Skipping.")
-        return
-
-    PX_PER_MM = 10.0
-    
-    from pexams.correct_exams import _apply_perspective_transform
-    warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
-
-    questions = [q for q in questions if q.is_multiple_choice]
-    layout_data = layout.get_answer_sheet_layout(questions)
-    
-    for q in questions:
-        q_id = q.id
-        correct_idx = q.correct_answer_index
-        if q_id in layout_data.answer_boxes and correct_idx is not None and correct_idx in layout_data.answer_boxes[q_id]:
-            chosen_option = layout_data.answer_boxes[q_id][correct_idx]
-            tl_x = int(chosen_option.top_left[0] * PX_PER_MM)
-            tl_y = int(chosen_option.top_left[1] * PX_PER_MM)
-            br_x = int(chosen_option.bottom_right[0] * PX_PER_MM)
-            br_y = int(chosen_option.bottom_right[1] * PX_PER_MM)
-            
-            cv2.rectangle(warped_sheet, (tl_x + 2, tl_y + 2), (br_x - 2, br_y - 2), (10, 10, 10), -1)
-
-    output_path = os.path.join(ref_output_dir, f"reference_scan_model_{model_num}.png")
-    cv2.imwrite(output_path, warped_sheet)
-    logging.info(f"Saved reference scan to {output_path}")
-
-
-def _generate_simulated_scan(original_pdf_path: str, questions: List[PexamQuestion], output_dir: str, model_num: Union[int, str]):
-    """
-    Takes the first page of a PDF, converts it to an image, finds the fiducial markers,
-    applies a perspective transform to get a perfect top-down view, and then adds
-    fake answers, name, ID, and signature to simulate a realistic, aligned scan.
-    """
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        logging.error("pdf2image is required for test mode. Please install it.")
-        return
-
-    fake = Faker()
-    scan_output_dir = os.path.join(output_dir, "simulated_scans")
-    os.makedirs(scan_output_dir, exist_ok=True)
-    manifest_path = os.path.join(scan_output_dir, "simulated_scan_manifest.json")
-
-    try:
-        images = convert_from_path(original_pdf_path, first_page=1, last_page=1, dpi=300)
-        if not images: return
-        img_cv = cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
-    except Exception as e:
-        logging.error(f"Failed to convert PDF to image for simulation: {e}")
-        return
-
-    # Find fiducial markers in the scanned image
-    marker_corners = _find_fiducial_markers_for_sim(img_cv)
-    if marker_corners is None:
-        logging.error("Could not find fiducial markers in the generated PDF for simulation. Skipping.")
-        return
-
-    # Use the same high-resolution scale as the correction process
-    PX_PER_MM = 10.0
-    
-    # Apply perspective transform to get a perfect, aligned image
-    from pexams.correct_exams import _apply_perspective_transform
-    warped_sheet = _apply_perspective_transform(img_cv, marker_corners, PX_PER_MM)
-
-    # --- Draw Fake Data onto the warped sheet ---
-    questions = [q for q in questions if q.is_multiple_choice]
-    layout_data = layout.get_answer_sheet_layout(questions)
-    
-    # Fake Name
-    name_box = layout_data.student_name_box
-    name_pos = (int(name_box.top_left[0] * PX_PER_MM) + 10, int(name_box.center[1] * PX_PER_MM) + 15)
-    cv2.putText(warped_sheet, fake.name(), name_pos, cv2.FONT_HERSHEY_SIMPLEX, 2, (20, 20, 20), 4)
-
-    # Fake ID
-    fake_id = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=8))
-    id_box = layout_data.student_id_box
-    
-    font_scale = 1.8
-    font_thickness = 4
-    (text_width, text_height), _ = cv2.getTextSize(fake_id, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-    center_x_px = int(id_box.center[0] * PX_PER_MM)
-    center_y_px = int(id_box.center[1] * PX_PER_MM)
-    id_pos = (center_x_px - text_width // 2, center_y_px + text_height // 2)
-    cv2.putText(warped_sheet, fake_id, id_pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (20, 20, 20), font_thickness)
-
-    # Fake Signature (scribble)
-    sig_box = layout_data.student_signature_box
-    center_y = int(sig_box.center[1] * PX_PER_MM)
-    start_x = int(sig_box.top_left[0] * PX_PER_MM) + 15
-    end_x = int(sig_box.bottom_right[0] * PX_PER_MM) - 15
-    for x in range(start_x, end_x, 10):
-        y_offset = random.randint(-20, 20)
-        cv2.line(warped_sheet, (x, center_y + y_offset), (x+10, center_y - y_offset), (30, 30, 30), 4)
-
-    # Fake Answers
-    for q_id, options in layout_data.answer_boxes.items():
-        if random.random() > 0.1: # 10% chance to leave blank
-            chosen_option = random.choice(list(options.values()))
-            tl_x = int(chosen_option.top_left[0] * PX_PER_MM)
-            tl_y = int(chosen_option.top_left[1] * PX_PER_MM)
-            br_x = int(chosen_option.bottom_right[0] * PX_PER_MM)
-            br_y = int(chosen_option.bottom_right[1] * PX_PER_MM)
-            
-            points = np.array([
-                [tl_x + random.randint(1, 4), tl_y + random.randint(1, 4)],
-                [br_x - random.randint(1, 4), tl_y + random.randint(1, 4)],
-                [br_x - random.randint(1, 4), br_y - random.randint(1, 4)],
-                [tl_x + random.randint(1, 4), br_y - random.randint(1, 4)]
-            ])
-            cv2.fillPoly(warped_sheet, [points], (10, 10, 10))
-
-    # Save the final simulated scan
-    output_filename = f"simulated_scan_model_{model_num}.png"
-    output_path = os.path.join(scan_output_dir, output_filename)
-    cv2.imwrite(output_path, warped_sheet)
-    try:
-        manifest = {}
-        if os.path.exists(manifest_path):
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        manifest[output_filename] = {
-            "student_id": fake_id,
-            "model_num": str(model_num),
-        }
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False, sort_keys=True)
-    except Exception as e:
-        logging.warning(f"Failed to update simulated scan manifest for {output_filename}: {e}")
-    logging.info(f"Saved simulated scan to {output_path}")

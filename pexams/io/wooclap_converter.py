@@ -4,6 +4,7 @@ import random
 import re
 from typing import List
 
+from pexams.markdown_render import MARKDOWN_IMAGE_RE
 from pexams.schemas import PexamQuestion
 
 try:
@@ -97,7 +98,7 @@ def convert_to_wooclap(questions: List[PexamQuestion], output_file: str):
             logging.warning("Skipping open-answer question %s: Wooclap export currently supports multiple choice only.", q.id)
             continue
 
-        if q.image_source:
+        if MARKDOWN_IMAGE_RE.search(q.text) or "<img" in q.text.lower():
             logging.warning(f"Skipping question {q.id} because Wooclap does not support images.")
             questions_with_images_skipped += 1
             continue

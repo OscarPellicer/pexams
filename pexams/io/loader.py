@@ -9,7 +9,7 @@ import pexams
 
 def load_and_prepare_questions(questions_path_str: str) -> Optional[List[PexamQuestion]]:
     """
-    Loads questions from a file (JSON or MD), resolving bundled assets and image paths.
+    Loads questions from a file (JSON or MD), also from the bundled assets.
     """
     questions_path = Path(questions_path_str)
 
@@ -55,33 +55,5 @@ def load_and_prepare_questions(questions_path_str: str) -> Optional[List[PexamQu
         logging.error("No questions loaded.")
         return None
         
-    # Resolve paths for images, making them absolute before passing them to the generator.
-    file_dir = questions_path.parent
-    for q in questions:
-        if q.image_source and not Path(q.image_source).is_absolute():
-            # First, try to resolve the path relative to the input file's directory.
-            image_path_rel_file = (file_dir / q.image_source).resolve()
-            
-            # If that path doesn't exist, try resolving relative to the current working directory.
-            image_path_rel_cwd = Path(q.image_source).resolve()
-            
-            # Also check relative to package assets if loading from sample
-            try:
-                package_dir = Path(pexams.__file__).parent
-                image_path_rel_assets = (package_dir / "assets" / q.image_source).resolve()
-            except:
-                image_path_rel_assets = Path("nonexistent")
-
-            if image_path_rel_file.exists():
-                q.image_source = str(image_path_rel_file)
-            elif image_path_rel_cwd.exists():
-                q.image_source = str(image_path_rel_cwd)
-            elif image_path_rel_assets.exists():
-                q.image_source = str(image_path_rel_assets)
-            else:
-                logging.warning(
-                    f"Could not find image for question {q.id} at '{q.image_source}'. "
-                    f"Checked relative to input file, current directory, and assets."
-                )
     return questions
 

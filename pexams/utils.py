@@ -6,7 +6,6 @@ import random
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 from pexams.schemas import PexamExam, PexamQuestion
-import Levenshtein
 
 # Global RNGs initialized with default seed 42
 _rng_questions = random.Random(42)
@@ -70,34 +69,6 @@ def shuffle_options_for_question(question: PexamQuestion) -> None:
     """
     if question.options:
         _rng_answers.shuffle(question.options)
-
-def fuzzy_match_id(target_id: str, candidates: list[str], threshold: int = 80) -> str | None:
-    """
-    Finds the best match for target_id in candidates using Levenshtein distance.
-    Threshold is 0-100 similarity score (100 is exact match).
-    Returns the best matching candidate or None if no match meets the threshold.
-    """
-    best_match = None
-    best_score = -1
-    
-    target_id_str = str(target_id)
-    target_len = len(target_id_str)
-    if target_len == 0:
-        return None
-
-    for candidate in candidates:
-        if not candidate: continue
-        candidate_str = str(candidate)
-        
-        # Calculate ratio (0-1) and convert to percentage (0-100)
-        # Levenshtein.ratio returns similarity ratio
-        score = Levenshtein.ratio(target_id_str, candidate_str) * 100.0
-        
-        if score >= threshold and score > best_score:
-            best_score = score
-            best_match = candidate
-            
-    return best_match
 
 def create_solutions_from_questions(
     questions: List[PexamQuestion],

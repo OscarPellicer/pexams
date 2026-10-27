@@ -4,11 +4,9 @@ Pexams is a library for generating beautiful multiple-choice exam sheets and aut
 
 NOTE: This library is still in development and is not yet ready for production use. Although everything should work, there may be some bugs, missing features, or breaking changes in future versions.
 
-## AI4Exams ecosystem
+## AI4Exams
 
-Pexams is part of the AI4Exams ecosystem together with `ptestgen`, `pevaluate`, and the planned `pstudio` visual orchestration layer.
-
-![AI4Exams ecosystem](https://raw.githubusercontent.com/OscarPellicer/ptestgen/refs/heads/main/media/ai4exams_ecosystem.png)
+Pexams is used together with `ptestgen` (writing and reviewing questions, the main entry point) and `pevaluate` (grading open answers and lab submissions with an LLM). Agents should start from the ptestgen skill (`ptestgen skill install`), which covers the whole workflow.
 
 ## Visual examples
 
@@ -128,8 +126,7 @@ The preferred input format is a Markdown file (`.md`) with the following structu
 
 ```markdown
 ## question_id
-> ![Image for question](image.png)
-Question text...
+Question text, with any images: ![w:60mm|Caption](image.png)
  * Correct answer
  * Wrong answer 1
  * Wrong answer 2
@@ -139,15 +136,38 @@ Optional explanation text...
 ```
 
 **Notes:**
-- The **first answer** in the list is treated as the correct one (it will be shuffled during exam generation).
-- Images must be in a blockquote `> ![...]`.
-- Question ID can be a string or integer.
+- The **first answer** in the list is treated as the correct one (it will be shuffled during exam generation). The first `* `, `- ` or `1. ` line starts the options, so a multiple-choice question cannot contain a list in its text (an open-answer question can).
+- Question IDs must be unique; they can be strings or integers.
 - Per-question points can be set in the header with `{points=2.5}`. In mixed exams, or when questions have different values, they are printed after the question number, e.g. **3.** **[2.5 pt]** (see `--show-points`).
 - Per-question font size can be set with `{font_size=8pt}`.
+- `<!-- comments -->` are ignored (a commented-out question is skipped).
+- The question text, the options and the custom header (`--custom-header`) are Markdown:
+
+| Feature | Syntax | Notes |
+|---|---|---|
+| Emphasis | `*italic*`, `_italic_`, `**bold**` | Underscores inside words (`snake_case`) stay literal. |
+| Line breaks | a single newline | In the question text a newline is a line break; a blank line starts a new paragraph. |
+| Code | `` `inline` ``, fenced blocks ```` ```python ```` … ```` ``` ```` | Fenced blocks only in the question text and header; options are one line, so inline code only. Lines inside a fence are never read as headers, options or sections. |
+| Math | `$x_1$`, `$$\sum_i x_i$$` (also across lines), `\$` for a literal dollar | Rendered with MathJax; `_`, `*` and newlines inside math are kept. `$5` alone is not math. Needs internet (MathJax CDN). |
+| Images | `![alt](fig.png)` anywhere, several per question | Paths are relative to the `.md` file. |
+
+Image layout goes in the alt text, `![spec|caption](img.png)` or `![spec](img.png)`: `w:<size>` and/or `h:<size>` (`px`, `mm`, `cm` or `%`; a plain number is px) and `left`, `right` (float, text wraps around it) or `center`. The caption is kept as the alt text (not printed). An alt that is not a valid spec, like `![left ventricle](lv.png)`, is just alt text.
+
+````markdown
+## ecg_1 {type=open lines=6}
+![w:60mm right|ECG lead II](figs/ecg.png) What is the heart rate in this ECG?
+Justify it with the RR interval, $HR = 60 / RR$.
+
+```python
+rr = np.diff(peaks) / fs
+```
+````
+
+Images are ordinary Markdown images and can go anywhere. The older form, a `> ![...](img.png)` line right after the header, still works: it becomes an image below the question text (at the start of the text if its alt has a layout spec). In a JSON questions file, `max_image_width`/`max_image_height` limit every image of the question, and a legacy `image_source` is added below the text. Open-answer boxes always start below floated images. Moodle XML and GIFT exports (`--to moodle`, `--to gift`) render the text the same way and embed every image with its layout as inline styles; R/exams gets the images of the question text below it; Wooclap takes no images (questions with one are skipped).
 
 ### Mixed exams with open-answer questions
 
-Open-answer questions are declared in the question header. The `lines` value reserves vertical space (7 mm per line, fractional values such as `lines=8.5` are allowed); guide lines are hidden by default and can be enabled per question with `show_lines=true`.
+Open-answer questions are declared in the question header. The `lines` value reserves vertical space (7 mm per line, fractional values such as `lines=8.5` are allowed); guide lines are hidden by default and can be enabled per question with `show_lines=true`. The `**Expected answer:**` and `**Rubric:**` sections are not printed (they are used for grading); everything before them is the printed question text.
 
 ```markdown
 ## mc_1 {points=2 font_size=9pt}
@@ -281,9 +301,16 @@ pexams correct \
 
 - `--void-questions <str>`: Comma-separated list of question numbers to exclude from scoring.
 - `--void-questions-nicely <str>`: Comma-separated list of question IDs to void "nicely".
-- `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. 
+- `--only-analysis`: Skip the image processing step (OCR/OMR) and proceed directly to the analysis and grading phase using an existing `correction_results.csv`. The annotated sheets in `scanned_pages/` are redrawn from it (from the unannotated sheets kept in `scanned_pages/.raw/`), so a misread answer fixed by hand, or a voided question, also shows on the sheet the student gets.
+- `--lang <code>`: Language of the labels drawn on the annotated sheets (e.g. `es`: voided questions are labelled "ANULADA"). Default `en`.
 
 **Layout check.** Each open-answer crop is checked against the printed box borders. If the borders are not where `open_answer_areas.json` expects them (typically because `--exam-dir` is not the exact version that was printed), pexams logs a warning and marks the crop with `layout_check=box_not_found` in `open_responses_index.csv`.
+
+**Writing outside the answer box.** Each scanned page is compared with the blank page of `exam_model_N.pdf` (in `--exam-dir`): what is on the scan and not printed is handwriting. When an answer has more than 6 mm² of it below its box (down to the next box, at most 30 mm) or in the side margins, the index gets `ink_outside_box=yes` (with `ink_outside_mm2`), and `open_responses/context/` a crop of the box with its surroundings (`context_crop_path`, the box within it in `context_box`). `pevaluate exam-open` grades those answers from the context crop.
+
+**How a box is read.** A box counts as marked when more than 30% of its inside (0.5 mm in from the printed border) is dark. The border itself is left out because it alone fills 20-30% of the box, and a border redrawn by hand after correction fluid even more; in a real exam, unmarked boxes stayed below 10% inside and marked ones (light pencil included) above 50%.
+
+**Two boxes filled in one question.** Students sometimes cross out a filled box instead of using correction fluid, which makes the crossed-out box the darkest. A question with more than one filled box is therefore not decided by fill level: the vision LLM used for the headers is shown the row and asked which option is the final answer. The `multiple_marks` column of `correction_results.csv` records it (`5:B+C->B`); without an LLM, or if it cannot be decided (`->?`), the question stays blank. Review those rows, fix `answer_N` if needed and rerun with `--only-analysis`.
 
 **Traceability.** With `--id-reader llm`, the output folder also contains `run_manifest.json` (command, package versions and git commits, model, effort, SHA-256 of the inputs) and `llm_calls.jsonl` (one line per LLM call: model requested and served, effort, request id, tokens, latency and hashes of the prompt, images and response).
 
@@ -310,6 +337,10 @@ This will re-read the corrected CSV, recalculate all scores (applying penalties,
 
 Creates a Moodle Assignment feedback-file ZIP from the corrected scans in `scanned_pages/` plus the marks in `final_marks.csv`.
 Upload the resulting ZIP in Moodle with **Upload multiple feedback files in a zip** / **Penja múltiples fitxers de retroacció en un zip**.
+
+The assignment needs the **Feedback files** feedback type enabled (Settings → Feedback types); the upload is in **Submissions → Actions → Upload feedback files in a zip**:
+
+![Moodle: Submissions → Actions](https://raw.githubusercontent.com/OscarPellicer/pevaluate/refs/heads/main/media/moodle_submissions_actions.png)
 
 ```bash
 pexams moodle-feedback-zip \

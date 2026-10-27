@@ -1,10 +1,20 @@
 import csv
 import logging
-import re
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
+
+from pexams.names import (  # noqa: F401  (re-exported for older imports)
+    common_prefix_len, levenshtein_distance, levenshtein_ratio, name_order_variants, normalize_name,
+    normalize_student_id, token_name_similarity,
+)
+
+__all__ = [
+    "StudentMatch", "match_scanned_students", "write_student_matches",
+    # Re-exported from pexams.names for older imports.
+    "common_prefix_len", "levenshtein_distance", "levenshtein_ratio", "name_order_variants", "normalize_name",
+    "normalize_student_id", "token_name_similarity",
+]
 
 
 @dataclass
@@ -20,71 +30,6 @@ class StudentMatch:
     @property
     def matched(self) -> bool:
         return bool(self.roster_student_id and self.roster_student_name)
-
-
-def normalize_name(value: str) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"[^A-Za-z0-9\s]+", " ", text).lower()
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def normalize_student_id(value: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
-
-
-def name_order_variants(name: str) -> List[str]:
-    normalized = normalize_name(name)
-    tokens = normalized.split()
-    variants = [normalized]
-
-    if len(tokens) >= 2:
-        for split in range(1, len(tokens)):
-            variants.append(" ".join(tokens[split:] + tokens[:split]))
-
-    seen = set()
-    unique_variants = []
-    for variant in variants:
-        if variant and variant not in seen:
-            seen.add(variant)
-            unique_variants.append(variant)
-    return unique_variants
-
-
-def levenshtein_distance(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-
-    previous = list(range(len(b) + 1))
-    for i, char_a in enumerate(a, start=1):
-        current = [i]
-        for j, char_b in enumerate(b, start=1):
-            insertion = current[j - 1] + 1
-            deletion = previous[j] + 1
-            substitution = previous[j - 1] + (char_a != char_b)
-            current.append(min(insertion, deletion, substitution))
-        previous = current
-    return previous[-1]
-
-
-def levenshtein_ratio(a: str, b: str) -> float:
-    max_len = max(len(a), len(b))
-    if max_len == 0:
-        return 100.0
-    return 100.0 * (1.0 - levenshtein_distance(a, b) / max_len)
-
-
-def common_prefix_len(a: str, b: str) -> int:
-    count = 0
-    for char_a, char_b in zip(a, b):
-        if char_a != char_b:
-            break
-        count += 1
-    return count
 
 
 def _best_id_match(
@@ -120,36 +65,6 @@ def _best_id_match(
     if best_row is not None and best_score >= threshold:
         return best_row, "id-fuzzy", best_score
     return None, "unmatched", best_score
-
-
-def token_name_similarity(query_key: str, candidate_key: str) -> float:
-    query_tokens = query_key.split()
-    candidate_tokens = candidate_key.split()
-    if not query_tokens or not candidate_tokens:
-        return 0.0
-
-    token_scores = []
-    exact_matches = 0
-    for query_token in query_tokens:
-        best_token_score = 0.0
-        for candidate_token in candidate_tokens:
-            if query_token == candidate_token:
-                best_token_score = 1.0
-                exact_matches += 1
-                break
-
-            prefix_len = common_prefix_len(query_token, candidate_token)
-            min_len = min(len(query_token), len(candidate_token))
-            if min_len >= 5 and prefix_len >= 4:
-                best_token_score = max(best_token_score, 0.85)
-            elif min_len >= 4 and prefix_len >= 3:
-                best_token_score = max(best_token_score, 0.75)
-
-        token_scores.append(best_token_score)
-
-    if exact_matches == 0:
-        return 0.0
-    return 100.0 * sum(token_scores) / len(token_scores)
 
 
 def _read_roster(path: str, id_column: str, name_column: str, encoding: str = "utf-8", sep: str = ",") -> List[dict]:

@@ -1,11 +1,11 @@
-import base64
 import logging
-import mimetypes
 import os
 import random
 import re
 from typing import List, Optional
 
+from pexams.markdown_render import (image_data_uri, inline_image_styles, limit_image_size, question_image_limits,
+                                     render_markdown, replace_image_sources)
 from pexams.schemas import PexamQuestion
 
 
@@ -21,9 +21,23 @@ def escape_gift(text: str) -> str:
     return escaped_text
 
 
-def convert_to_gift(questions: List[PexamQuestion], output_file: str, max_image_width: Optional[int] = None, max_image_height: Optional[int] = None):
-    """Converts questions to GIFT format using PexamQuestion."""
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+def _gift_html(text: str, base_dir: Optional[str], nl2br: bool = False, paragraph: bool = True) -> str:
+    """Markdown rendered like the PDF, as one-line HTML: images embedded as data URIs and their
+    layout as inline styles. GIFT ends a question at a blank line, so newlines become spaces
+    (``&#10;`` inside ``<pre>``, where they matter)."""
+    html_text = inline_image_styles(render_markdown(text or "", nl2br=nl2br))
+    html_text = replace_image_sources(html_text, base_dir, image_data_uri)
+    if not paragraph:
+        html_text = re.sub(r"^<p>(.*)</p>$", r"\1", html_text, flags=re.DOTALL)
+    parts = re.split(r"(<pre\b.*?</pre>)", html_text, flags=re.DOTALL)
+    return "".join(p.replace("\n", "&#10;") if p.startswith("<pre") else p.replace("\n", " ") for p in parts)
+
+
+def convert_to_gift(questions: List[PexamQuestion], output_file: str, max_image_width: Optional[int] = None,
+                    max_image_height: Optional[int] = None, base_dir: Optional[str] = None):
+    """Converts questions to GIFT (HTML format). Images in the text (paths relative to
+    ``base_dir``, the folder of the questions file) are embedded."""
+    os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
     logging.info(f"Converting {len(questions)} questions to GIFT: {output_file}")
 
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -31,71 +45,23 @@ def convert_to_gift(questions: List[PexamQuestion], output_file: str, max_image_
             if q.is_open_answer:
                 logging.warning("Skipping open-answer question %s: GIFT export currently supports multiple choice only.", q.id)
                 continue
-            
+
             # Use question ID in title for uniqueness
             question_name = f"Q{i+1}_{q.id}"
             f.write(f"::{escape_gift(question_name)}::")
 
-            # --- Prepare Question Text ---
-            question_text = q.text
-            format_specifier = "[markdown]"  # Always use Markdown as requested
+            question_text = _gift_html(q.text, base_dir, nl2br=True)
+            question_text = limit_image_size(question_text, *question_image_limits(q, max_image_width, max_image_height))
+            f.write(f"[html]{escape_gift(question_text)} {{\n")
 
-            if q.image_source:
-                # Correctly resolve the image path relative to the project root
-                # Assuming image_source is absolute or relative to CWD
-                image_path = q.image_source
-                if not os.path.isabs(image_path):
-                     image_path = os.path.abspath(image_path)
-                     
-                try:
-                    with open(image_path, "rb") as image_file:
-                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                        mime_type, _ = mimetypes.guess_type(image_path)
-                        if mime_type:
-                            style = ""
-                            if max_image_width:
-                                style += f"width:{max_image_width}px; "
-                            if max_image_height:
-                                style += f"max-height:{max_image_height}px;"
-                            
-                            img_tag = f"<img src='data:{mime_type};base64,{encoded_string}' alt='Image for question' style='{style}' />"
-                            question_text += f"<p>{img_tag}</p>"
-                            # No need for special logic, as Markdown handles HTML
-                        else:
-                            logging.warning(f"Could not determine MIME type for {image_path}. Skipping image.")
-                except FileNotFoundError:
-                    logging.warning(f"Image file not found: {image_path}. Skipping image embedding.")
-                except Exception as e:
-                    logging.error(f"Error processing image {image_path}: {e}", exc_info=True)
-
-            # Convert single '$' to '$$' for MathJax, but not if already '$$'
-            def replace_latex_delimiters(text):
-                # This regex finds single '$' not preceded or followed by another '$'
-                return re.sub(r'(?<!\$)\$(?!\$)', '$$', text)
-
-            question_text = replace_latex_delimiters(question_text)
-            
-            # Prepend format tag if needed
-            question_text_with_format = f"{format_specifier}{question_text}"
-
-            f.write(f"{escape_gift(question_text_with_format)} {{\n")
-
-            # --- Prepare and Write Options ---
             options_list = list(q.options)
             random.shuffle(options_list)  # Shuffle order in GIFT file
-
             for option in options_list:
-                processed_option = replace_latex_delimiters(option.text)
-                option_escaped = escape_gift(processed_option)
                 prefix = "=" if option.is_correct else "~"
-                # For now, no per-answer feedback is in the schema
-                f.write(f"\t{prefix}{option_escaped}\n")
+                f.write(f"\t{prefix}{escape_gift(_gift_html(option.text, base_dir, paragraph=False))}\n")
 
-            # --- Add General Feedback (Explanation) ---
-            if q.explanation:
-                processed_explanation = replace_latex_delimiters(q.explanation)
-                explanation_escaped = escape_gift(processed_explanation)
-                f.write(f"\t####{explanation_escaped}\n")  # General feedback marker
+            if q.explanation:  # general feedback
+                f.write(f"\t####{escape_gift(_gift_html(q.explanation, base_dir))}\n")
 
             f.write("}\n\n")
 

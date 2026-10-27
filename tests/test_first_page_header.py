@@ -73,7 +73,7 @@ def _mc_question():
 
 def _generated_html(tmp_path, monkeypatch, questions):
     utils.set_seeds(seed_questions=None, seed_answers=42)
-    monkeypatch.setattr("pexams.generate_exams.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr("pexams.pdf_render.sync_playwright", lambda: FakePlaywright())
     generate_exams(questions, str(tmp_path), num_models=1, keep_html=True)
     html = (tmp_path / "exam_model_1.html").read_text(encoding="utf-8")
     return html.split("<body>", 1)[1]  # the page itself, without the embedded CSS

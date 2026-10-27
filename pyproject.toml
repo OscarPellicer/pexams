@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pexams"
-version = "0.15.0"
+version = "0.16.0"
 description = "A Python library for generating and correcting exams using Playwright and OpenCV."
 authors = [
     { name = "Oscar J. Pellicer-Valero" },
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -29,10 +29,6 @@ dependencies = [
     "matplotlib",
     "pandas",
     "tabulate",
-    "torch",
-    "torchvision",
-    "transformers",
-    "timm",
     "pymdown-extensions",
     "python-Levenshtein",
     "pypdf",
@@ -40,6 +36,10 @@ dependencies = [
     "pytest",
     "python-dotenv",
 ]
+
+[project.optional-dependencies]
+# Local TrOCR reader for the exam headers (--id-reader trocr, and the fallback without an API key).
+trocr = ["torch", "torchvision", "transformers", "timm"]
 
 [tool.pytest.ini_options]
 markers = [
