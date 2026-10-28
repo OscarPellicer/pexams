@@ -341,6 +341,7 @@ def write_run_manifest(output_dir: str, tool: str, llm: Optional[LLMClient] = No
         "tool": tool,
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "command": sys.argv,
+        "cwd": os.getcwd(),  # relative paths in the command resolve from here
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "packages": packages,
